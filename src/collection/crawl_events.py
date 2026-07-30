@@ -1,27 +1,27 @@
 from pathlib import Path
-import re
+from datetime import datetime
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
 
-URL = "https://www.vlr.gg/events"
-OUTPUT_PATH = Path("data/raw/vlr_events.csv")
+URL = "https://www.vlr.gg/events/?tier=60"
+OUTPUT_PATH = Path("data/raw/vlr_VCT_events.csv")
 
 MONTHS = {
-    "jan": 1,
-    "feb": 2,
-    "mar": 3,
-    "apr": 4,
-    "may": 5,
-    "jun": 6,
-    "jul": 7,
-    "aug": 8,
-    "sep": 9,
-    "oct": 10,
-    "nov": 11,
-    "dec": 12,
+    "jan": "01",
+    "feb": "02",
+    "mar": "03",
+    "apr": "04",
+    "may": "05",
+    "jun": "06",
+    "jul": "07",
+    "aug": "08",
+    "sep": "09",
+    "oct": "10",
+    "nov": "11",
+    "dec": "12",
 }
 
 
@@ -45,28 +45,56 @@ def get_date(item):
             return cleaned_date
     return None
 
+def split_event_dates(date_str):
+    if not date_str:
+        return None, None
+    parts = date_str.split("—")
+    start_date = parts[0].strip().lower()
+    start_month = start_date.split(" ")[0]
+    if len(parts) == 1:
+        return start_date, None
+    else:
+        end_part = parts[1].strip().lower()
+    if end_part.isdigit():
+        end_date = f"{start_month} {end_part}"
+    else:
+        end_date = end_part
+    return start_date, end_date
+
+def convert_date(date):
+    if not date:
+        return None
+    date_month, date_day = date.split(" ")
+    month = MONTHS[date_month]
+    day = date_day.zfill(2)
+    return f"{day}/{month}"
 
 
+events = []
 def crawl_events():
-    response = requests.get(URL, timeout=30)
-    response.raise_for_status()
+    for page in range(1, 20):
+        page_url = f"{URL}&page={page}"
+        response = requests.get(page_url, timeout=30)
+        response.raise_for_status()
+        print(response.status_code)
 
-    events = []
-    soup = BeautifulSoup(response.text, "html.parser")
-    for item in soup.find_all("div", class_="event-item-inner"):
-        title = item.find("div", class_="event-item-title")
-        date = get_date(item)
-        start_date, end_date = split_event_dates(date)
-        events.append(
-            {
-                "title": title.text.strip() if title else None,
-                "date": date,
-                "start_date": start_date,
-                "end_date": end_date,
-                "region": get_region(item),
-            }
-        )
-
+        soup = BeautifulSoup(response.text, "html.parser")
+        event_items = soup.find_all("div", class_="event-item-inner")
+        if not event_items:
+            break
+        for item in soup.find_all("div", class_="event-item-inner"):
+            title = item.find("div", class_="event-item-title")
+            date = get_date(item)
+            start_date, end_date = split_event_dates(date)
+            events.append(
+                {
+                    "title": title.text.strip() if title else None,
+                    "date": date,
+                    "start_date": convert_date(start_date),
+                    "end_date": convert_date(end_date),
+                    "region": get_region(item),
+                }
+            )
     return pd.DataFrame(events)
 
 
