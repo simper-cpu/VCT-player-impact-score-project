@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 import pandas as pd
 import requests
@@ -7,6 +8,21 @@ from bs4 import BeautifulSoup
 
 URL = "https://www.vlr.gg/events"
 OUTPUT_PATH = Path("data/raw/vlr_events.csv")
+
+MONTHS = {
+    "jan": 1,
+    "feb": 2,
+    "mar": 3,
+    "apr": 4,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "aug": 8,
+    "sep": 9,
+    "oct": 10,
+    "nov": 11,
+    "dec": 12,
+}
 
 
 def get_region(item):
@@ -30,6 +46,7 @@ def get_date(item):
     return None
 
 
+
 def crawl_events():
     response = requests.get(URL, timeout=30)
     response.raise_for_status()
@@ -38,10 +55,14 @@ def crawl_events():
     soup = BeautifulSoup(response.text, "html.parser")
     for item in soup.find_all("div", class_="event-item-inner"):
         title = item.find("div", class_="event-item-title")
+        date = get_date(item)
+        start_date, end_date = split_event_dates(date)
         events.append(
             {
                 "title": title.text.strip() if title else None,
-                "date": get_date(item),
+                "date": date,
+                "start_date": start_date,
+                "end_date": end_date,
                 "region": get_region(item),
             }
         )
