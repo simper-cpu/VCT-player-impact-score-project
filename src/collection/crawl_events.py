@@ -1,13 +1,11 @@
 from pathlib import Path
-from datetime import datetime
-
+import re
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-
-URL = "https://www.vlr.gg/events/?tier=60"
-OUTPUT_PATH = Path("data/raw/vlr_VCT_events.csv")
+INPUT_PATH = Path("data/raw/vlr_VCT_EMEA_events_URL.csv")
+OUTPUT_PATH = Path("data/raw/vlr_VCT_EMEA_events.csv")
 
 MONTHS = {
     "jan": "01",
@@ -26,77 +24,88 @@ MONTHS = {
 
 
 def get_region(item):
-    icon = item.find("i", class_="flag")
-    classes = icon.get("class", []) if icon else []
-    for css_class in classes:
+    location_item = item.find( lambda tag: tag.name == "div" and tag.get_text(strip=True) == "Location")
+    if not location_item:
+        return None
+    location_lable = location_item.parent
+    locaion_classes = location_lable.find("i").get("class")
+    for css_class in locaion_classes:
         if css_class.startswith("mod-"):
-            return css_class.split("-", 1)[1]
-    return None
+            region_classes_raw = css_class
+            region_code = css_class.split("-", 1)[1]
+            return region_classes_raw, region_code
+    return None,None
 
 
 def get_date(item):
-    date_el = item.find("div", class_="event-item-desc-item mod-dates")
-    if not date_el:
+    date_item = item.find(lambda tag: tag.name == "div" and tag.get_text(strip=True) == "Dates")
+    if not date_item:
         return None
-
-    for text in date_el.find_all(string=True, recursive=False):
-        cleaned_date = text.strip()
-        if cleaned_date:
-            return cleaned_date
+    date_label = date_item.parent
+    date_str = date_label.find("div", class_="value").get_text(strip=True)
+    if date_str:
+        return date_str
     return None
 
 def split_event_dates(date_str):
     if not date_str:
-        return None, None
-    parts = date_str.split("—")
+        return None, None, None
+    parts = re.split(r'\s*[–-]\s*|,\s*', date_str) #định dạng date_string đang là: jul 15 - jul 20, 2024
     start_date = parts[0].strip().lower()
     start_month = start_date.split(" ")[0]
     if len(parts) == 1:
-        return start_date, None
+        return start_date, None, None
     else:
-        end_part = parts[1].strip().lower()
-    if end_part.isdigit():
-        end_date = f"{start_month} {end_part}"
-    else:
-        end_date = end_part
-    return start_date, end_date
+        end_date = parts[1].strip().lower()
+    if end_date.isdigit():
+        end_date = f"{start_month} {end_date}"
+    if len(parts) == 3:
+        year = parts[2].strip()
+        return start_date, end_date, year
+    return start_date, end_date, None
 
-def convert_date(date):
+def convert_date(date, year):
     if not date:
         return None
     date_month, date_day = date.split(" ")
     month = MONTHS[date_month]
     day = date_day.zfill(2)
-    return f"{day}/{month}"
+    return f"{year}-{month}-{day}"
+
 
 
 events = []
+
+def crawl_one_event(url):
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    print("Crawling events from URL:", url)
+    print(response.status_code)
+    soup = BeautifulSoup(response.text, "html.parser")
+    event_item = soup.find("div", class_ = "event-header-main")
+    if not event_item:
+        return None
+    title = event_item.find("h1", class_="event-header-main-title")
+    date = get_date(event_item)
+    start_date, end_date, year = split_event_dates(date)
+    event = {
+        "title": title.text.strip() if title else None,
+        "date_raw": date,
+        "start_date": convert_date(start_date, year) if year else convert_date(start_date, None),
+        "end_date": convert_date(end_date, year) if year else convert_date(end_date, None),
+        "region_raw": get_region(event_item)[0] if get_region(event_item) else None,
+        "region": get_region(event_item)[1] if get_region(event_item) else None,
+        }
+    return event
+
 def crawl_events():
-    for page in range(1, 20):
-        page_url = f"{URL}&page={page}"
-        response = requests.get(page_url, timeout=30)
-        response.raise_for_status()
-        print(response.status_code)
-
-        soup = BeautifulSoup(response.text, "html.parser")
-        event_items = soup.find_all("div", class_="event-item-inner")
-        if not event_items:
-            break
-        for item in soup.find_all("div", class_="event-item-inner"):
-            title = item.find("div", class_="event-item-title")
-            date = get_date(item)
-            start_date, end_date = split_event_dates(date)
-            events.append(
-                {
-                    "title": title.text.strip() if title else None,
-                    "date": date,
-                    "start_date": convert_date(start_date),
-                    "end_date": convert_date(end_date),
-                    "region": get_region(item),
-                }
-            )
+    df = pd.read_csv(INPUT_PATH)
+    for index, row in df.iterrows():
+        url = row["url"]
+        event_data = crawl_one_event(url)
+        if event_data:
+            events.append(event_data)
     return pd.DataFrame(events)
-
 
 if __name__ == "__main__":
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
