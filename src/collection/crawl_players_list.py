@@ -8,7 +8,6 @@ import requests
 from bs4 import BeautifulSoup
 import time
 
-# reuse a single Session for connection pooling and set a User-Agent
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (compatible; VCTProject/1.0)"})
 
