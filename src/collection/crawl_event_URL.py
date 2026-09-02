@@ -8,7 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 
 URL =  "https://www.vlr.gg/events/?region=27&tier=60"
-OUTPUT_PATH = Path("data/raw/vlr_VCT_EMEA_events_URL.csv")
+OUTPUT_PATH = Path("data/raw/EMEA_events_URL.csv")
 
 events = []
 
@@ -33,6 +33,7 @@ def crawl_event_URL():
         status_labels = soup.select(
             "div.wf-label.mod-large.mod-upcoming, "
             "div.wf-label.mod-large.mod-ongoing, "
+            "div.wf-label.mod-large.mod-completed"
         )
 
         if not status_labels:
@@ -42,12 +43,16 @@ def crawl_event_URL():
         for label in status_labels:
             classes = label.get("class", [])
 
+            # 2. Xử lý triệt để cả 3 điều kiện
             if "mod-upcoming" in classes:
                 status = "upcoming"
+            elif "mod-ongoing" in classes:
+                status = "ongoing"
             elif "mod-completed" in classes:
                 status = "completed"
             else:
                 continue
+                
             container = label.parent
             event_items = container.find_all(
                 "a",
