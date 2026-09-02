@@ -1,21 +1,3 @@
-import re
-import csv
-import time
-import logging
-import pandas as pd
-import requests
-from bs4 import BeautifulSoup
-from pathlib import Path
-
-# Cấu hình đường dẫn
-INPUT_PATH = Path("data/raw/EMEA_matches.csv")
-OUTPUT_PATH = Path("data/raw/match_maps_stat.csv")
-
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
-
-MATCH_HREF_PATTERN = re.compile(r"/(\d+)(?:/|$)")
-
 from asyncio import events
 from pathlib import Path
 from datetime import datetime
@@ -102,11 +84,41 @@ def get_player(match_url):
             match_data.append(get_player_stats(player, match_url, map_name))
     return match_data
 
-player_stat = get_player("https://www.vlr.gg/712803")  
-for player in player_stat:
-    for key, value in player.items():
-        print(f"{key}: {value}")
-    print("-" * 40)  # In dấu phân cách giữa các player
+def get_all_matches(input_path):
+    df = pd.read_csv(input_path)
+    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    already_crawled = set()
+    if OUTPUT_PATH.exists():
+        existing = pd.read_csv(OUTPUT_PATH)
+        already_crawled = set(existing["match_id"].astype(str))
+    if OUTPUT_PATH.exists() and OUTPUT_PATH.stat().st_size > 0:
+        existing = pd.read_csv(OUTPUT_PATH)
+        already_crawled = set(existing["match_id"].astype(str))
+    write_header = not OUTPUT_PATH.exists()
+    with open(OUTPUT_PATH, "a", newline="", encoding="utf-8") as f:
+        writer = None
+        for _, row in df.iterrows():
+            match_url = row["match_url"]
+            match_id = get_match_id(match_url)
+            if match_id in already_crawled:
+                continue
+            try:
+                match_data = get_player(match_url)
+            except Exception as e:
+                logger.warning("Loi khi crawl %s: %s", match_url, e)
+                continue  
+            if not match_data:
+                continue
+            if writer is None:
+                writer = csv.DictWriter(f, fieldnames=match_data[0].keys())
+                if write_header:
+                    writer.writeheader()
+            for row_data in match_data:
+                writer.writerow(row_data)
+            f.flush()  
+            time.sleep(0.1)
+
+get_all_matches(INPUT_PATH)
     
 
 
