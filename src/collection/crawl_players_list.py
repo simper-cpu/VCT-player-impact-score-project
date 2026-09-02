@@ -11,7 +11,7 @@ import time
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (compatible; VCTProject/1.0)"})
 
-INPUT_PATH = Path("data/raw/vlr_VCT_EMEA_events_URL.csv")
+INPUT_PATH = Path("data/raw/EMEA_events_URL.csv")
 OUTPUT_PATH = Path("data/raw/players_by_events.csv")
 
 STAT_SELECTION = {
@@ -87,7 +87,6 @@ def crawl_events():
 if __name__ == "__main__":
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     crawl_events().to_csv(OUTPUT_PATH, index=False)
-
 
 
 

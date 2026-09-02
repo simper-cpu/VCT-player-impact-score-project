@@ -4,8 +4,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-INPUT_PATH = Path("data/raw/vlr_VCT_EMEA_events_URL.csv")
-OUTPUT_PATH = Path("data/raw/vlr_VCT_EMEA_events.csv")
+INPUT_PATH = Path("data/raw/EMEA_events_URL.csv")
+OUTPUT_PATH = Path("data/raw/EMEA_events.csv")
 
 MONTHS = {
     "jan": "01",
@@ -76,7 +76,7 @@ def convert_date(date, year):
 
 events = []
 
-def crawl_one_event(url):
+def crawl_one_event(url, event_id):
     response = requests.get(url, timeout=30)
     response.raise_for_status()
     print("Crawling events from URL:", url)
@@ -89,6 +89,7 @@ def crawl_one_event(url):
     date = get_date(event_item)
     start_date, end_date, year = split_event_dates(date)
     event = {
+        "id": event_id,
         "title": title.text.strip() if title else None,
         "date_raw": date,
         "start_date": convert_date(start_date, year) if year else convert_date(start_date, None),
@@ -102,7 +103,8 @@ def crawl_events():
     df = pd.read_csv(INPUT_PATH)
     for index, row in df.iterrows():
         url = row["url"]
-        event_data = crawl_one_event(url)
+        event_id = row["event_id"]
+        event_data = crawl_one_event(url, event_id)
         if event_data:
             events.append(event_data)
     return pd.DataFrame(events)
