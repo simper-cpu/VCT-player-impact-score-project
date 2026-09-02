@@ -23,6 +23,25 @@ def get_match_id(href):
     match_id = re.search(r"/match/(\d+)/", href)
     return match_id.group(1) if match_id else None
 
+def get_match_date_time(item):
+    time_tag = item.find("div", class_="match-item-time")
+    match_time = time_tag.get_text(strip=True) if time_tag else None
+    formatted_date = None
+    wf_card = item.find_parent("div", class_="wf-card")
+    if wf_card:
+        date_tag = wf_card.find_previous_sibling("div", class_="wf-label mod-large")
+        if date_tag:
+            raw_date = date_tag.get_text(strip=True) 
+            try:
+                # Chuyển đổi định dạng sang yyyy-mm-dd
+                parsed_date = datetime.strptime(raw_date, "%a, %B %d, %Y")
+                formatted_date = parsed_date.strftime("%Y-%m-%d")
+            except ValueError:
+                formatted_date = raw_date 
+
+    return formatted_date, match_time
+    
+
 def get_match_info(item, event_url):
     raw_href = item.get("href").strip()
     if not raw_href:
@@ -52,9 +71,12 @@ def get_match_info(item, event_url):
 
     stats["valid_match_href"] += 1
     match_id = match.group(1)
+    match_date, match_time = get_match_date_time(item)
     return {
         "match_id": match_id,
         "match_url": f"https://www.vlr.gg{raw_href}",
+        "match_date": match_date,
+        "match_time": match_time
     }
 
 def get_one_event(event_url):
@@ -76,6 +98,8 @@ def get_all_events(input_path):
                 matches["match_id"].append(match_info["match_id"])
                 matches["match_url"].append(match_info["match_url"])
                 matches["event_id"].append(event_url.split("/")[-2])
+                matches["match_date"].append(match_info["match_date"])
+                matches["match_time"].append(match_info["match_time"])
         time.sleep(0.1) 
     logger.info(
         "Tổng kết | hợp lệ=%d | sai mẫu=%d | thiếu link match=%d",
@@ -84,7 +108,7 @@ def get_all_events(input_path):
         stats["missing_match_href"],
     )
 
-matches = {"match_id": [], "match_url": [], "event_id": []}
+matches = {"match_id": [], "match_url": [], "event_id": [], "match_date": [], "match_time": []}
 get_all_events(INPUT_PATH)
 data = pd.DataFrame(matches)
 
