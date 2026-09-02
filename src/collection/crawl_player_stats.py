@@ -19,11 +19,9 @@ OUTPUT_PATH = Path("data/raw/players_stat.csv")
 INVALID_HREF_LOG = Path("data/logs/invalid_player_stats.csv")
 
 def get_player_id(player):
-    # Nhắm thẳng vào thẻ <a> chứa link player
     player_link = player.select_one('a[href^="/player/"]')
     if player_link:
         href = player_link.get("href")
-        # Dùng Regex để rút trích con số ID
         match = re.search(r"/player/(\d+)", href)
         return match.group(1) if match else None
     return None
