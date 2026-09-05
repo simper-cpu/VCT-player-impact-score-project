@@ -17,6 +17,7 @@ stats = Counter()
 INPUT_PATH = Path("data/raw/EMEA_matches.csv")
 OUTPUT_PATH = Path("data/raw/players_stat.csv")
 INVALID_HREF_LOG = Path("data/logs/invalid_player_stats.csv")
+REQUEST_TIMEOUT = 15
 
 def get_player_id(player):
     player_link = player.select_one('a[href^="/player/"]')
@@ -30,10 +31,52 @@ def get_match_id(match_url):
     match_id = re.search(r"/(\d+)/", match_url)
     return match_id.group(1) if match_id else None
 
-def get_player_stats(player, match_url, map):
+def get_match_team_ids(soup):
+    team_ids = []
+    for team_link in soup.select('a.match-header-link[href^="/team/"]'):
+        match = re.search(r"/team/(\d+)", team_link.get("href", ""))
+        if match and match.group(1) not in team_ids:
+            team_ids.append(match.group(1))
+    return team_ids[:2]
+
+
+def assign_team_ids_for_players(players, team_ids):
+    team_ids_by_tag = {}
+    assigned = []
+    last_non_empty_team = None
+    first_pass = []
+
+    for idx, player in enumerate(players):
+        tag = player.select_one("div.ovw-player-tag")
+        team_tag = tag.get_text(strip=True) if tag else ""
+        if team_tag:
+            last_non_empty_team = team_tag
+            if team_tag not in team_ids_by_tag and len(team_ids_by_tag) < len(team_ids):
+                team_ids_by_tag[team_tag] = team_ids[len(team_ids_by_tag)]
+        first_pass.append((player, team_tag, last_non_empty_team))
+
+    for player, team_tag, last_non_empty_team in first_pass:
+        if team_tag and team_tag in team_ids_by_tag:
+            assigned_id = team_ids_by_tag[team_tag]
+        elif last_non_empty_team and last_non_empty_team in team_ids_by_tag:
+            assigned_id = team_ids_by_tag[last_non_empty_team]
+        elif team_ids:
+            if len(team_ids_by_tag) == 1:
+                assigned_id = next(iter(team_ids_by_tag.values()))
+            else:
+                assigned_id = team_ids[0] if len(assigned) < len(players) / 2 else team_ids[1]
+        else:
+            assigned_id = None
+        assigned.append((player, assigned_id))
+
+    return assigned
+
+
+def get_player_stats(player, match_url, map, team_id):
     player_data = {}
     player_data["name"] = player.find("div", class_ = "ovw-player-name text-of").get_text().strip()
     player_data["team"] = player.find("div", class_ ="ovw-player-tag ge-text-light").get_text().strip()
+    player_data["team_id"] = team_id
     player_data["player_id"] = get_player_id(player)
     player_data["agent"] = player.find("img").get("alt").strip()
     player_data["map"] = map
@@ -59,7 +102,7 @@ def get_player_stats(player, match_url, map):
     return player_data
 
 def get_player(match_url):
-    response = requests.get(match_url)
+    response = requests.get(match_url, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     print(f"crawling {match_url}, status code: {response.status_code}")
     match_data = []
@@ -78,22 +121,34 @@ def get_player(match_url):
             else:
                 map_name = "Unknown"
         players = map.select("div.ovw-row:not(.mod-head)")
-        for player in players:
-            match_data.append(get_player_stats(player, match_url, map_name))
+        team_ids = get_match_team_ids(soup)
+        assigned_players = assign_team_ids_for_players(players, team_ids)
+        for player, team_id in assigned_players:
+            match_data.append(
+                get_player_stats(
+                    player,
+                    match_url,
+                    map_name,
+                    team_id,
+                )
+            )
     return match_data
 
 def get_all_matches(input_path):
     df = pd.read_csv(input_path)
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     already_crawled = set()
-    if OUTPUT_PATH.exists():
-        existing = pd.read_csv(OUTPUT_PATH)
-        already_crawled = set(existing["match_id"].astype(str))
+    rewrite_output = False
     if OUTPUT_PATH.exists() and OUTPUT_PATH.stat().st_size > 0:
-        existing = pd.read_csv(OUTPUT_PATH)
-        already_crawled = set(existing["match_id"].astype(str))
-    write_header = not OUTPUT_PATH.exists()
-    with open(OUTPUT_PATH, "a", newline="", encoding="utf-8") as f:
+        existing_columns = pd.read_csv(OUTPUT_PATH, nrows=0).columns
+        rewrite_output = "team_id" not in existing_columns
+        if not rewrite_output:
+            existing = pd.read_csv(OUTPUT_PATH, usecols=["match_id"])
+            already_crawled = set(existing["match_id"].astype(str))
+
+    output_path = OUTPUT_PATH.with_suffix(".tmp.csv") if rewrite_output else OUTPUT_PATH
+    write_header = rewrite_output or not OUTPUT_PATH.exists()
+    with open(output_path, "w" if rewrite_output else "a", newline="", encoding="utf-8") as f:
         writer = None
         for _, row in df.iterrows():
             match_url = row["match_url"]
@@ -116,7 +171,11 @@ def get_all_matches(input_path):
             f.flush()  
             time.sleep(0.1)
 
-get_all_matches(INPUT_PATH)
+    if rewrite_output:
+        output_path.replace(OUTPUT_PATH)
+
+if __name__ == "__main__":
+    get_all_matches(INPUT_PATH)
     
 
 

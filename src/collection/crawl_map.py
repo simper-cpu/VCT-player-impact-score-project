@@ -230,4 +230,5 @@ def get_all_matches(input_path):
 
             f.flush()
             time.sleep(0.5)
-get_all_matches(INPUT_PATH)
+if __name__ == "__main__":
+    get_all_matches(INPUT_PATH)
