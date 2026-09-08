@@ -1,16 +1,11 @@
-from asyncio import events
-from pathlib import Path
-from datetime import datetime
 import re
+import argparse
 
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-URL =  "https://www.vlr.gg/events/?region=27&tier=60"
-OUTPUT_PATH = Path("data/raw/EMEA_events_URL.csv")
-
-events = []
+from src.collection.collection_utils import add_region_arguments, add_region_column, region_name, region_path
 
 
 def extract_event_id(event_url):
@@ -20,11 +15,11 @@ def extract_event_id(event_url):
     return match.group(1) if match else None
 
 
-def crawl_event_URL():
+def crawl_event_URL(region_id: int, region: str, max_pages: int = 20):
     events = []
 
-    for page in range(1, 20):
-        page_url = f"{URL}&page={page}"
+    for page in range(1, max_pages + 1):
+        page_url = f"https://www.vlr.gg/events/?region={region_id}&tier=60&page={page}"
         response = requests.get(page_url, timeout=30)
         response.raise_for_status()
         print(f"Scraping page {page}: {page_url} - Status code: {response.status_code}")
@@ -72,9 +67,16 @@ def crawl_event_URL():
                     "status": status,
                 })
 
-    return pd.DataFrame(events)
+    return add_region_column(pd.DataFrame(events), region)
 
 if __name__ == "__main__":
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    crawl_event_URL().to_csv(OUTPUT_PATH, index=False)
+    parser = argparse.ArgumentParser(description="Crawl VLR event URLs for one region")
+    add_region_arguments(parser)
+    parser.add_argument("--max-pages", type=int, default=20)
+    args = parser.parse_args()
+    region = region_name(args.region)
+    output_path = region_path(args.raw_dir, region, "events_URL")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    crawl_event_URL(args.region_id, region, args.max_pages).to_csv(output_path, index=False)
+    print(f"Saved {len(pd.read_csv(output_path))} event URLs to {output_path}")
 

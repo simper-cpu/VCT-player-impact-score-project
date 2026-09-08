@@ -1,3 +1,4 @@
+import argparse
 import re
 import csv
 import time
@@ -7,10 +8,9 @@ import requests
 from bs4 import BeautifulSoup
 from pathlib import Path
 
-# Cấu hình đường dẫn
-INPUT_PATH = Path("data/raw/EMEA_matches.csv")
-OUTPUT_PATH = Path("data/raw/match_maps_stat.csv")
+from src.collection.collection_utils import add_region_arguments, region_name, region_path
 
+# Cấu hình đường dẫn
 # Cấu hình request - có timeout và User-Agent để tránh bị treo / bị chặn
 REQUEST_TIMEOUT = 15
 HEADERS = {
@@ -184,22 +184,22 @@ def get_map_stats(match_url):
     return match_data
 
 
-def get_all_matches(input_path):
+def get_all_matches(input_path, output_path, region):
     df = pd.read_csv(input_path)
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    file_has_content = OUTPUT_PATH.exists() and OUTPUT_PATH.stat().st_size > 0
+    file_has_content = output_path.exists() and output_path.stat().st_size > 0
 
     already_crawled = set()
     if file_has_content:
-        existing = pd.read_csv(OUTPUT_PATH)
+        existing = pd.read_csv(output_path)
         already_crawled = set(existing["match_id"].astype(str))
 
     # Chỉ bỏ qua việc ghi header nếu file đã tồn tại VÀ đã có nội dung
     # (trước đây chỉ check exists() nên file rỗng sẽ không bao giờ có header)
     write_header = not file_has_content
 
-    with open(OUTPUT_PATH, "a", newline="", encoding="utf-8") as f:
+    with open(output_path, "a", newline="", encoding="utf-8") as f:
         writer = None
         for _, row in df.iterrows():
             match_url = row["match_url"]
@@ -218,6 +218,8 @@ def get_all_matches(input_path):
 
             if not match_data:
                 continue
+            for row_data in match_data:
+                row_data["region"] = region
 
             if writer is None:
                 writer = csv.DictWriter(f, fieldnames=match_data[0].keys())
@@ -231,4 +233,10 @@ def get_all_matches(input_path):
             f.flush()
             time.sleep(0.5)
 if __name__ == "__main__":
-    get_all_matches(INPUT_PATH)
+    parser = argparse.ArgumentParser(description="Crawl map stats for one region")
+    add_region_arguments(parser)
+    args = parser.parse_args()
+    region = region_name(args.region)
+    input_path = region_path(args.raw_dir, region, "matches")
+    output_path = region_path(args.raw_dir, region, "match_maps_stat")
+    get_all_matches(input_path, output_path, region)

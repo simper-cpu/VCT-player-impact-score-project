@@ -7,14 +7,12 @@ from time import sleep
 
 import pandas as pd
 
-from crawl_map import get_map_stats, get_match_id as get_map_match_id
-from crawl_player_stats import get_player, get_match_id as get_player_match_id
+from src.collection.collection_utils import add_region_arguments, region_name, region_path
+from src.collection.crawl_map import get_map_stats, get_match_id as get_map_match_id
+from src.collection.crawl_player_stats import get_player, get_match_id as get_player_match_id
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-INPUT_PATH = BASE_DIR / "data/raw/EMEA_matches.csv"
-PLAYER_OUTPUT = BASE_DIR / "data/raw/players_stat.csv"
-MAP_OUTPUT = BASE_DIR / "data/raw/match_maps_stat.csv"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -51,6 +49,7 @@ def crawl_dataset(
     workers,
     retries,
     force,
+    region,
 ):
     already_crawled, rebuild = existing_ids(output_path, required_columns)
     rebuild = force or rebuild
@@ -80,11 +79,12 @@ def crawl_dataset(
             for index, ((match_id, match_url), rows) in enumerate(zip(jobs, results), start=1):
                 if rows:
                     if writer is None:
+                        rows = [dict(row, region=region) for row in rows]
                         writer = csv.DictWriter(file, fieldnames=rows[0].keys())
                         if write_header:
                             writer.writeheader()
                             write_header = False
-                    writer.writerows(rows)
+                    writer.writerows([dict(row, region=region) for row in rows])
                     file.flush()
                 LOGGER.info("%s: %d/%d finished", output_path.name, index, len(jobs))
 
@@ -100,6 +100,7 @@ def main():
         default="both",
         help="Dataset to crawl",
     )
+    add_region_arguments(parser)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument(
@@ -113,31 +114,37 @@ def main():
         parser.error("workers and retries must be positive")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    matches = pd.read_csv(INPUT_PATH, dtype={"match_id": "string"})
+    region = region_name(args.region)
+    input_path = region_path(args.raw_dir, region, "matches")
+    player_output = region_path(args.raw_dir, region, "players_stat")
+    map_output = region_path(args.raw_dir, region, "match_maps_stat")
+    matches = pd.read_csv(input_path, dtype={"match_id": "string"})
     matches = matches.drop_duplicates("match_id")
 
     if args.target in {"players", "both"}:
         crawl_dataset(
             matches,
-            PLAYER_OUTPUT,
+            player_output,
             get_player,
             get_player_match_id,
             ["match_id", "team_id"],
             args.workers,
             args.retries,
             args.force,
+            region,
         )
 
     if args.target in {"maps", "both"}:
         crawl_dataset(
             matches,
-            MAP_OUTPUT,
+            map_output,
             get_map_stats,
             get_map_match_id,
             ["match_id", "team_1_id", "team_2_id"],
             args.workers,
             args.retries,
             args.force,
+            region,
         )
 
 

@@ -102,11 +102,12 @@ def get_player(match_url):
             match_data.append(get_player_stats(player, match_url, map_name))
     return match_data
 
-player_stat = get_player("https://www.vlr.gg/712803")  
-for player in player_stat:
-    for key, value in player.items():
-        print(f"{key}: {value}")
-    print("-" * 40)  # In dấu phân cách giữa các player
+if __name__ == "__main__":
+    player_stat = get_player("https://www.vlr.gg/712803")
+    for player in player_stat:
+        for key, value in player.items():
+            print(f"{key}: {value}")
+        print("-" * 40)  # In dấu phân cách giữa các player
     
 
 

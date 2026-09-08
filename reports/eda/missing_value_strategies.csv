@@ -1,0 +1,3 @@
+strategy,rows_deleted,rows_deleted_percent,rows_retained,rows_retained_percent,columns_deleted,columns_retained_percent
+Drop rows with any missing value,2473,3.381417925753743,70662,96.61858207424626,0,100.0
+Drop every column containing missing values,0,0.0,73135,100.0,10,83.87096774193549
