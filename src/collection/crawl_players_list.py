@@ -1,18 +1,14 @@
-from asyncio import events
-from pathlib import Path
-from datetime import datetime
-
+import argparse
 import re
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 import time
 
+from src.collection.collection_utils import add_region_arguments, region_name, region_path
+
 SESSION = requests.Session()
 SESSION.headers.update({"User-Agent": "Mozilla/5.0 (compatible; VCTProject/1.0)"})
-
-INPUT_PATH = Path("data/raw/EMEA_events_URL.csv")
-OUTPUT_PATH = Path("data/raw/players_by_events.csv")
 
 STAT_SELECTION = {
     "player_name" : 'div.st-pl-name.text-of',
@@ -66,8 +62,8 @@ def crawl_one_event(url):
         event_data.append(player_data)
     return event_data
 
-def crawl_events():
-    df = pd.read_csv(INPUT_PATH)
+def crawl_events(input_path, region):
+    df = pd.read_csv(input_path)
     events = []
     for index, row in df.iterrows():
         event_id = row["event_id"]
@@ -80,13 +76,20 @@ def crawl_events():
             print(f"Failed to crawl {stats_url}")
         for player_data in event_data:
             player_data["event_id"] = row["event_id"]
+            player_data["region"] = region
             events.append(player_data)
     time.sleep(0.5)  
     return pd.DataFrame(events)
 
 if __name__ == "__main__":
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    crawl_events().to_csv(OUTPUT_PATH, index=False)
+    parser = argparse.ArgumentParser(description="Crawl event-level player stats for one region")
+    add_region_arguments(parser)
+    args = parser.parse_args()
+    region = region_name(args.region)
+    input_path = region_path(args.raw_dir, region, "events_URL")
+    output_path = region_path(args.raw_dir, region, "players_by_events")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    crawl_events(input_path, region).to_csv(output_path, index=False)
 
 
 

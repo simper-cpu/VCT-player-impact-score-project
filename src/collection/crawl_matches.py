@@ -1,7 +1,8 @@
-from asyncio import events
-from pathlib import Path
+import argparse
 from datetime import datetime
+from pathlib import Path
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 
 import re
 import pandas as pd
@@ -11,16 +12,17 @@ import time
 import logging
 import csv
 
+from src.collection.collection_utils import add_region_arguments, region_name, region_path
+
 logger = logging.getLogger(__name__)
 stats = Counter()
 
-INPUT_PATH = Path("data/raw/EMEA_events_URL.csv")
-OUTPUT_PATH = Path("data/raw/EMEA_matches.csv")
-MATCH_HREF_PATTERN = MATCH_HREF_PATTERN = re.compile(r"^/(?P<match_id>\d+)(?:/|$)")
+# VLR event pages use links such as /15263/team-a-vs-team-b.
+MATCH_HREF_PATTERN = re.compile(r"^/(?P<match_id>\d+)(?:/|$)")
 INVALID_HREF_LOG = Path("data/logs/invalid_match_hrefs.csv")
 
 def get_match_id(href):
-    match_id = re.search(r"/match/(\d+)/", href)
+    match_id = re.search(r"^/(\d+)(?:/|$)", href)
     return match_id.group(1) if match_id else None
 
 def get_match_date_time(item):
@@ -79,40 +81,70 @@ def get_match_info(item, event_url):
         "match_time": match_time
     }
 
-def get_one_event(event_url):
-    response = requests.get(event_url)
-    response.raise_for_status()
-    print("Crawling %s...., Status code: %d", event_url, response.status_code)
-    soup = BeautifulSoup(response.content, "html.parser")
-    items = soup.select("a.wf-module-item.match-item[href]")
-    return items
+def get_one_event(event_url, retries=3):
+    last_error = None
+    for attempt in range(retries):
+        try:
+            response = requests.get(event_url, timeout=30)
+            response.raise_for_status()
+            print(f"Crawling {event_url} | Status code: {response.status_code}")
+            soup = BeautifulSoup(response.content, "html.parser")
+            return soup.select("a.wf-module-item.match-item[href]")
+        except requests.RequestException as error:
+            last_error = error
+            if attempt + 1 < retries:
+                time.sleep(2 ** attempt)
+    raise last_error
 
-def get_all_events(input_path):
+def crawl_event_matches(event_id, region, retries):
+    event_url = f"https://www.vlr.gg/event/matches/{event_id}/"
+    rows = []
+    for item in get_one_event(event_url, retries):
+        match_info = get_match_info(item, event_url)
+        if match_info:
+            rows.append({
+                "region": region,
+                "match_id": match_info["match_id"],
+                "match_url": match_info["match_url"],
+                "event_id": str(event_id),
+                "match_date": match_info["match_date"],
+                "match_time": match_info["match_time"],
+            })
+    return rows
+
+
+def get_all_events(input_path, region, workers=4, retries=3):
+    matches = {"region": [], "match_id": [], "match_url": [], "event_id": [], "match_date": [], "match_time": []}
     df = pd.read_csv(input_path)
-    for ___, row in df.iterrows():
-        event_id = row["event_id"]
-        event_url = f"https://www.vlr.gg/event/matches/{event_id}/"
-        for item in get_one_event(event_url):
-            match_info = get_match_info(item,event_url)
-            if match_info:
-                matches["match_id"].append(match_info["match_id"])
-                matches["match_url"].append(match_info["match_url"])
-                matches["event_id"].append(event_url.split("/")[-2])
-                matches["match_date"].append(match_info["match_date"])
-                matches["match_time"].append(match_info["match_time"])
-        time.sleep(0.1) 
+    event_ids = df["event_id"].dropna().drop_duplicates().tolist()
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        event_results = executor.map(
+            lambda event_id: crawl_event_matches(event_id, region, retries),
+            event_ids,
+        )
+        for rows in event_results:
+            for row in rows:
+                for column in matches:
+                    matches[column].append(row[column])
     logger.info(
         "Tổng kết | hợp lệ=%d | sai mẫu=%d | thiếu link match=%d",
         stats["valid_match_href"],
         stats["invalid_match_href"],
         stats["missing_match_href"],
     )
-
-matches = {"match_id": [], "match_url": [], "event_id": [], "match_date": [], "match_time": []}
-get_all_events(INPUT_PATH)
-data = pd.DataFrame(matches)
+    return pd.DataFrame(matches).drop_duplicates("match_id")
 
 if __name__ == "__main__":
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data.to_csv(OUTPUT_PATH, index=False)
+    parser = argparse.ArgumentParser(description="Crawl VLR matches for one region")
+    add_region_arguments(parser)
+    parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--retries", type=int, default=3)
+    args = parser.parse_args()
+    region = region_name(args.region)
+    input_path = region_path(args.raw_dir, region, "events_URL")
+    output_path = region_path(args.raw_dir, region, "matches")
+    result = get_all_events(input_path, region, args.workers, args.retries)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result.to_csv(output_path, index=False)
+    print(f"Saved {len(result)} matches to {output_path}")
 

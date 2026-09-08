@@ -1,11 +1,11 @@
-from pathlib import Path
+import argparse
 import re
+import time
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
-INPUT_PATH = Path("data/raw/EMEA_events_URL.csv")
-OUTPUT_PATH = Path("data/raw/EMEA_events.csv")
+from src.collection.collection_utils import add_region_arguments, add_region_column, region_name, region_path
 
 MONTHS = {
     "jan": "01",
@@ -74,11 +74,18 @@ def convert_date(date, year):
 
 
 
-events = []
-
-def crawl_one_event(url, event_id):
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
+def crawl_one_event(url, event_id, retries=3):
+    response = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            break
+        except requests.RequestException as error:
+            if attempt == retries:
+                print(f"Skipping event {event_id} after {retries} attempts: {error}")
+                return None
+            time.sleep(2 ** (attempt - 1))
     print("Crawling events from URL:", url)
     print(response.status_code)
     soup = BeautifulSoup(response.text, "html.parser")
@@ -94,21 +101,31 @@ def crawl_one_event(url, event_id):
         "date_raw": date,
         "start_date": convert_date(start_date, year) if year else convert_date(start_date, None),
         "end_date": convert_date(end_date, year) if year else convert_date(end_date, None),
-        "region_raw": get_region(event_item)[0] if get_region(event_item) else None,
-        "region": get_region(event_item)[1] if get_region(event_item) else None,
+        "source_region_raw": get_region(event_item)[0] if get_region(event_item) else None,
+        "source_region": get_region(event_item)[1] if get_region(event_item) else None,
         }
     return event
 
-def crawl_events():
-    df = pd.read_csv(INPUT_PATH)
+def crawl_events(input_path, region, retries=3):
+    df = pd.read_csv(input_path)
+    events = []
     for index, row in df.iterrows():
         url = row["url"]
         event_id = row["event_id"]
-        event_data = crawl_one_event(url, event_id)
+        event_data = crawl_one_event(url, event_id, retries)
         if event_data:
             events.append(event_data)
-    return pd.DataFrame(events)
+    return add_region_column(pd.DataFrame(events), region)
 
 if __name__ == "__main__":
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    crawl_events().to_csv(OUTPUT_PATH, index=False)
+    parser = argparse.ArgumentParser(description="Crawl VLR event details for one region")
+    add_region_arguments(parser)
+    parser.add_argument("--retries", type=int, default=3)
+    args = parser.parse_args()
+    region = region_name(args.region)
+    input_path = region_path(args.raw_dir, region, "events_URL")
+    output_path = region_path(args.raw_dir, region, "events")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result = crawl_events(input_path, region, args.retries)
+    result.to_csv(output_path, index=False)
+    print(f"Saved {len(result)} events to {output_path}")

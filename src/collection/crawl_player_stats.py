@@ -1,4 +1,4 @@
-from asyncio import events
+import argparse
 from pathlib import Path
 from datetime import datetime
 from collections import Counter
@@ -11,11 +11,11 @@ import time
 import logging
 import csv
 
+from src.collection.collection_utils import add_region_arguments, region_name, region_path
+
 logger = logging.getLogger(__name__)
 stats = Counter()
 
-INPUT_PATH = Path("data/raw/EMEA_matches.csv")
-OUTPUT_PATH = Path("data/raw/players_stat.csv")
 INVALID_HREF_LOG = Path("data/logs/invalid_player_stats.csv")
 REQUEST_TIMEOUT = 15
 
@@ -134,21 +134,21 @@ def get_player(match_url):
             )
     return match_data
 
-def get_all_matches(input_path):
+def get_all_matches(input_path, output_path, region):
     df = pd.read_csv(input_path)
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     already_crawled = set()
     rewrite_output = False
-    if OUTPUT_PATH.exists() and OUTPUT_PATH.stat().st_size > 0:
-        existing_columns = pd.read_csv(OUTPUT_PATH, nrows=0).columns
+    if output_path.exists() and output_path.stat().st_size > 0:
+        existing_columns = pd.read_csv(output_path, nrows=0).columns
         rewrite_output = "team_id" not in existing_columns
         if not rewrite_output:
-            existing = pd.read_csv(OUTPUT_PATH, usecols=["match_id"])
+            existing = pd.read_csv(output_path, usecols=["match_id"])
             already_crawled = set(existing["match_id"].astype(str))
 
-    output_path = OUTPUT_PATH.with_suffix(".tmp.csv") if rewrite_output else OUTPUT_PATH
-    write_header = rewrite_output or not OUTPUT_PATH.exists()
-    with open(output_path, "w" if rewrite_output else "a", newline="", encoding="utf-8") as f:
+    temporary_path = output_path.with_suffix(".tmp.csv") if rewrite_output else output_path
+    write_header = rewrite_output or not output_path.exists()
+    with open(temporary_path, "w" if rewrite_output else "a", newline="", encoding="utf-8") as f:
         writer = None
         for _, row in df.iterrows():
             match_url = row["match_url"]
@@ -162,6 +162,8 @@ def get_all_matches(input_path):
                 continue  
             if not match_data:
                 continue
+            for row_data in match_data:
+                row_data["region"] = region
             if writer is None:
                 writer = csv.DictWriter(f, fieldnames=match_data[0].keys())
                 if write_header:
@@ -172,10 +174,16 @@ def get_all_matches(input_path):
             time.sleep(0.1)
 
     if rewrite_output:
-        output_path.replace(OUTPUT_PATH)
+        temporary_path.replace(output_path)
 
 if __name__ == "__main__":
-    get_all_matches(INPUT_PATH)
+    parser = argparse.ArgumentParser(description="Crawl player stats for one region")
+    add_region_arguments(parser)
+    args = parser.parse_args()
+    region = region_name(args.region)
+    input_path = region_path(args.raw_dir, region, "matches")
+    output_path = region_path(args.raw_dir, region, "players_stat")
+    get_all_matches(input_path, output_path, region)
     
 
 
