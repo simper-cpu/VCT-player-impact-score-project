@@ -30,6 +30,7 @@ from src.features.feature_schema import (
     MODEL_FEATURES,
     MODEL_NUMERIC_FEATURES,
     TARGETS,
+    FEATURE_SCHEMA_VERSION,
     chronological_split,
     ensure_no_leakage,
     make_match_timestamp,
@@ -37,6 +38,7 @@ from src.features.feature_schema import (
     validate_dataset,
 )
 from src.features.historical_features import build_historical_features
+from src.models.calibration import apply_prediction_calibration, fit_affine_calibration
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,7 +47,16 @@ DEFAULT_FEATURE_OUTPUT = ROOT / "data/processed/player_match_features.csv"
 DEFAULT_MODEL_DIR = ROOT / "models"
 DEFAULT_REPORT_DIR = ROOT / "reports/modeling"
 DEFAULT_MANIFEST_DIR = ROOT / "reports/manifests"
-DATASET_VERSION = "player_match_dataset_cleaned-v2-historical-ewma"
+DATASET_VERSION = "player_match_dataset_cleaned-v3-role-context"
+
+FEATURE_GROUPS = {
+    "player_only": tuple(column for column in MODEL_FEATURES if column.startswith("player_") or column in {"match_year", "match_month", "match_dayofweek"}),
+    "player_agent_role": tuple(column for column in MODEL_FEATURES if column.startswith("player_") or column in {"agent", "role", "role_confidence", "form_fallback_level", "match_year", "match_month", "match_dayofweek"}),
+    "team": tuple(column for column in MODEL_FEATURES if column in {"team", "team_pick", "team_elo", "team_rating_last_5", "team_rating_last_10", "team_acs_last_5", "team_kda_last_5", "elo_gap"}),
+    "opponent": tuple(column for column in MODEL_FEATURES if column in {"opponent_team", "opponent_elo", "opponent_rating_last_5", "opponent_rating_last_10", "opponent_acs_last_5", "opponent_kda_last_5", "opponent_map_strength"}),
+    "map": tuple(column for column in MODEL_FEATURES if column in {"map", "player_map_rating_last", "player_map_rating_last_3", "player_map_acs_last_5", "player_map_kda_last_5", "player_map_matches_played", "team_map_win_rate", "opponent_map_win_rate"}),
+    "roster_interactions": tuple(column for column in MODEL_FEATURES if column in {"lineup_continuity", "veterans_remaining", "team_roster_synergy", "team_role_duelist_share", "team_role_initiator_share", "team_role_controller_share", "team_role_sentinel_share", "player_agent_map_rating_last_5", "player_role_map_rating_last_5", "team_map_rating_last_5"}),
+}
 
 DEFAULT_CANDIDATES = {
     "rating2_all": ("rf", "xgb", "xgb_tuned", "catboost"),
@@ -283,8 +294,10 @@ def save_error_reports(predictions: pd.DataFrame, target: str, output_dir: Path)
     predictions["abs_error"] = predictions["residual"].abs()
     predictions.to_csv(output_dir / f"{target}_test_predictions.csv", index=False)
     for column, filename in (
-        ("map", "map"), ("agent", "agent"), ("experience_bucket", "experience"),
-        ("time_period", "time_period"),
+        ("map", "map"), ("agent", "agent"), ("role", "role"),
+        ("experience_bucket", "experience"), ("time_period", "time_period"),
+        ("known_opponent", "opponent_knowledge"), ("known_map", "map_knowledge"),
+        ("roster_stability", "roster_stability"), ("role_experience", "role_experience"),
     ):
         if column not in predictions:
             continue
@@ -408,8 +421,9 @@ def train_all(
     manifest = {
         "dataset_version": DATASET_VERSION,
         "input": str(input_path),
-        "feature_schema_version": "v2-ewma-context",
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
         "features": list(MODEL_FEATURES),
+        "feature_groups": {name: list(columns) for name, columns in FEATURE_GROUPS.items()},
         "targets": list(TARGETS),
         "split": {
             "train_match_ids": list(split.train_match_ids),
@@ -437,12 +451,14 @@ def train_all(
     all_metrics = []
     rolling_detail_rows: list[dict] = []
     rolling_selection_rows: list[dict] = []
+    calibration_rows: list[dict] = []
     for target in TARGETS:
         train_target = train.dropna(subset=[target]).copy()
         validation_target = validation.dropna(subset=[target]).copy()
         test_target = test.dropna(subset=[target]).copy()
         candidate_results = []
         candidate_pipelines = {}
+        candidate_validation_predictions = {}
         kinds = candidate_kinds if candidate_kinds is not None else DEFAULT_CANDIDATES[target]
         for kind in kinds:
             for log_target in log_options(target, kind):
@@ -457,6 +473,7 @@ def train_all(
                     score.update({"target": target, "model": label, "split": "validation"})
                     candidate_results.append(score)
                     candidate_pipelines[label] = (kind, log_target)
+                    candidate_validation_predictions[label] = prediction
                 except (RuntimeError, ValueError):
                     continue
         if not candidate_results:
@@ -488,6 +505,8 @@ def train_all(
             selected_summary = None
             best = min(candidate_results, key=lambda item: item["mae"])
         best_kind, best_log = candidate_pipelines[best["model"]]
+        validation_prediction = candidate_validation_predictions[best["model"]]
+        calibration = fit_affine_calibration(validation_target[target], validation_prediction)
 
         # Refit only the selected configuration on train + validation; test stays untouched.
         refit = pd.concat([train_target, validation_target], ignore_index=True)
@@ -495,11 +514,30 @@ def train_all(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             final_pipeline.fit(refit[list(MODEL_FEATURES)], refit[target])
-        prediction = final_pipeline.predict(test_target[list(MODEL_FEATURES)])
+        raw_prediction = final_pipeline.predict(test_target[list(MODEL_FEATURES)])
+        prediction = apply_prediction_calibration(raw_prediction, calibration)
+        raw_test_score = metrics(test_target[target], raw_prediction)
+        raw_test_score.update({"target": target, "model": f"{best['model']}_raw_uncalibrated", "split": "test"})
         test_score = metrics(test_target[target], prediction)
         test_score.update({"target": target, "model": best["model"], "split": "test"})
         all_metrics.extend(candidate_results)
+        all_metrics.append(raw_test_score)
         all_metrics.append(test_score)
+
+        calibration_rows.append({
+            "target": target,
+            "model": best["model"],
+            "enabled": calibration.get("enabled", False),
+            "slope": calibration.get("slope", 1.0),
+            "intercept": calibration.get("intercept", 0.0),
+            "validation_raw_mae": calibration.get("validation_raw_mae"),
+            "validation_calibrated_mae": calibration.get("validation_calibrated_mae"),
+            "test_raw_mae": raw_test_score["mae"],
+            "test_calibrated_mae": test_score["mae"],
+            "test_actual_std": float(np.std(test_target[target].to_numpy(dtype=float))),
+            "test_raw_std": float(np.std(raw_prediction)),
+            "test_calibrated_std": float(np.std(prediction)),
+        })
 
         baseline_rows = []
         for split_name, frame, baseline_train in (
@@ -518,7 +556,9 @@ def train_all(
             "match_id": test_target["match_id"].to_numpy(),
             "map": test_target["map"].to_numpy(),
             "agent": test_target["agent"].to_numpy(),
+            "role": test_target["role"].to_numpy(),
             "actual": test_target[target].to_numpy(),
+            "prediction_raw": raw_prediction,
             "prediction": prediction,
             "residual": test_target[target].to_numpy() - prediction,
             "player_matches_played": test_target["player_matches_played"].to_numpy(),
@@ -526,6 +566,13 @@ def train_all(
         })
         errors["experience_bucket"] = pd.cut(
             errors["player_matches_played"], bins=[-1, 0, 5, 20, np.inf],
+            labels=["cold_start", "1-5", "6-20", "21+"],
+        ).astype("string")
+        errors["known_opponent"] = np.where(test_target["opponent_rating_last_5"].notna(), "known", "unknown")
+        errors["known_map"] = np.where(test_target["player_map_matches_played"] > 0, "known", "unknown")
+        errors["roster_stability"] = np.where(test_target["lineup_continuity"].fillna(0) >= 0.8, "stable", "changed_or_unknown")
+        errors["role_experience"] = pd.cut(
+            test_target["player_role_matches_played"], bins=[-1, 0, 5, 20, np.inf],
             labels=["cold_start", "1-5", "6-20", "21+"],
         ).astype("string")
         errors["time_period"] = pd.qcut(
@@ -537,26 +584,37 @@ def train_all(
         metadata = {
             "target": target,
             "features": list(MODEL_FEATURES),
-            "feature_schema_version": "v2-ewma-context",
+            "feature_schema_version": FEATURE_SCHEMA_VERSION,
+            "feature_groups": {name: list(columns) for name, columns in FEATURE_GROUPS.items()},
             "cutoff_date": split.test_cutoff,
             "model_name": best["model"],
             "model_parameters": final_pipeline.named_steps["model"].get_params(deep=True),
             "metrics": {
                 "validation": best,
+                "validation_calibration": calibration,
+                "test_raw_uncalibrated": raw_test_score,
                 "rolling_selection": selected_summary,
                 "test": test_score,
             },
+            "calibration": calibration,
             "dataset_version": DATASET_VERSION,
             "package_versions": _package_versions(),
         }
         stem = {"rating2_all": "rating", "acs_all": "acs", "kda_all": "kda"}[target]
         joblib.dump({"pipeline": final_pipeline, "metadata": metadata}, model_dir / f"vct_{stem}_pipeline.joblib")
 
+        (manifest_dir / f"{target}_model_manifest.json").write_text(
+            json.dumps(metadata, indent=2, default=_json_default), encoding="utf-8"
+        )
+
     pd.DataFrame(rolling_detail_rows).to_csv(
         report_dir / "rolling_validation_metrics.csv", index=False
     )
     pd.DataFrame(rolling_selection_rows).to_csv(
         report_dir / "rolling_selection.csv", index=False
+    )
+    pd.DataFrame(calibration_rows).to_csv(
+        report_dir / "calibration_metrics.csv", index=False
     )
     metrics_frame = pd.DataFrame(all_metrics)
     metrics_frame.to_csv(report_dir / "metrics.csv", index=False)

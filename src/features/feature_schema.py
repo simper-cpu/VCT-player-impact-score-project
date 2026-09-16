@@ -8,6 +8,8 @@ from typing import Iterable
 import pandas as pd
 import numpy as np
 
+from .role_mapping import ROLES
+
 
 TARGETS = ("rating2_all", "acs_all", "kda_all")
 KEY_COLUMNS = ("player_id", "match_id", "map")
@@ -31,8 +33,8 @@ POST_MAP_COLUMNS = (
 )
 
 CATEGORICAL_FEATURES = (
-    "map", "agent", "team", "opponent_team", "team_pick",
-    "event_stage", "event_round", "region",
+    "map", "agent", "role", "team", "opponent_team", "team_pick",
+    "event_stage", "event_round", "region", "form_fallback_level",
 )
 HISTORICAL_FEATURES = (
     "player_rating_last", "player_rating_last_3", "player_rating_last_5",
@@ -52,11 +54,26 @@ HISTORICAL_FEATURES = (
     "player_agent_rating_last_5", "player_agent_acs_last_5", "player_agent_kda_last_5",
     "player_agent_matches_played", "player_rest_days",
     "player_matches_last_7d", "player_matches_last_14d", "player_matches_last_30d",
-    "player_cold_start",
+    "player_cold_start", "role_confidence",
+    "player_role_rating_last_5", "player_role_acs_last_5", "player_role_kda_last_5",
+    "player_role_matches_played", "player_role_share",
+    "team_acs_last_5", "team_kda_last_5", "opponent_acs_last_5", "opponent_kda_last_5",
+    "team_map_win_rate", "opponent_map_win_rate", "team_map_matches", "opponent_map_matches",
+    "team_strength_of_schedule", "opponent_map_strength",
+    "player_opponent_rating_last_5", "player_opponent_matches_played",
+    "role_matchup_rating_last_5", "role_matchup_matches_played",
+    "team_elo_confidence", "lineup_continuity", "veterans_remaining",
+    "team_role_duelist_share", "team_role_initiator_share",
+    "team_role_controller_share", "team_role_sentinel_share",
+    "team_roster_synergy", "player_agent_map_rating_last_5",
+    "player_role_map_rating_last_5", "team_map_rating_last_5",
+    "player_rating_fallback", "player_acs_fallback", "player_kda_fallback",
+    "player_history_sample_size",
 )
 TEMPORAL_FEATURES = ("match_year", "match_month", "match_dayofweek")
 MODEL_NUMERIC_FEATURES = HISTORICAL_FEATURES + TEMPORAL_FEATURES
 MODEL_FEATURES = MODEL_NUMERIC_FEATURES + CATEGORICAL_FEATURES
+FEATURE_SCHEMA_VERSION = "v3-role-context-state"
 
 
 def make_match_timestamp(df: pd.DataFrame) -> pd.Series:
@@ -85,7 +102,7 @@ def validate_dataset(df: pd.DataFrame, require_targets: bool = True) -> dict:
         "missing_key_values": int(df[list(KEY_COLUMNS)].isna().any(axis=1).sum()),
         "missing_timestamp_rows": int(timestamp.isna().sum()),
         "target_missing": {target: int(df[target].isna().sum()) for target in TARGETS if target in df},
-        "feature_schema_version": "v2-ewma-context",
+        "feature_schema_version": FEATURE_SCHEMA_VERSION,
     }
 
 

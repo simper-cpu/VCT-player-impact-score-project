@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.features.role_mapping import add_role_columns
+
 ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_PATH = ROOT / "data/processed/player_match_dataset_cleaned.csv"
 INITIAL_ELO = 1500.0
@@ -64,6 +66,7 @@ def clean_player_stats(df):
     # The crawler can return the same player/map more than once.  Keeping one
     # deterministic row prevents duplicated targets and double-counted history.
     df = df.drop_duplicates(PLAYER_MAP_KEY, keep="last").copy()
+    df = add_role_columns(df)
 
     return df
 
@@ -227,6 +230,8 @@ def build_feature_dataset(players_path, matches_path, maps_path, output_path=OUT
         "team_1",
         "team_2",
         "team_pick",
+        "role",
+        "role_confidence",
         "map_winner",
         "first_half_ct_win_rounds",
         "first_half_t_win_rounds",

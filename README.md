@@ -124,3 +124,71 @@ reports/modeling/
 reports/manifests/
 tests/test_pipeline.py
 ```
+
+## Stage 2: roles, context and inference state
+
+`src/features/role_mapping.py` derives a role from each agent and retains
+`role_confidence`; unknown agents use `Flex/Unknown`. Historical role state and
+fallbacks are snapshotted before each map.
+
+Historical features include team/opponent ACS and KDA, map win rate, strength
+of schedule, player-vs-opponent and role-matchup history, roster continuity,
+role composition and interaction features. Maps sharing a timestamp are
+snapshotted as a batch before any outcomes update state.
+
+`src/features/state_builder.py` uses the same historical builder for offline
+training and online inference. Sparse inference can use completed-map history:
+
+```powershell
+python -m src.models.inference --target rating2_all --input request.csv --history completed_maps.csv --output predictions.csv
+```
+
+## Region recovery safety
+
+The VLR region mapping is versioned in `src/collection/region_config.py`:
+
+```text
+EMEA=27, AMERICAS=26, PACIFIC=28
+```
+
+Event URL/detail crawls validate event titles semantically, and checkpoints
+include a configuration fingerprint. A cross-region identity audit runs before
+merge and blocks unexplained duplicate `match_id` values. VLR lists global
+Masters/Champions events in multiple regional catalogs, so the audit allows a
+duplicate only when the copies share the same global event and `match_url`; the
+merge then keeps one deterministic copy. The current raw snapshot is preserved under
+`data/archive/region_recovery_20260911_0700/`; recovery artifacts are written
+under `data/recovery/region_recovery_20260911/`.
+
+While recovery status is `in_progress`, the Streamlit app is intentionally
+disabled and the existing merged dataset/models must not be used for
+performance evaluation. The app is re-enabled only after the recovered raw
+data, cleaned dataset, feature dataset, and rebuilt models pass audit.
+
+## Streamlit VCT Performance Explorer
+
+The local-data explorer reads `data/processed/player_match_dataset_cleaned_all_regions.csv`
+first and falls back to `player_match_dataset_cleaned.csv`. It does not crawl or
+train models from the UI.
+
+Run it with:
+
+```powershell
+python -m pip install -r requirements.txt
+streamlit run app.py
+```
+
+The app provides four tabs: team overview, map-level match history, player
+detail with one- or two-metric charts, and forecast. Forecast requires an
+opponent and supports both a general forecast and a map/agent scenario. It
+uses only completed maps before the prediction timestamp and shows sample size,
+cold-start/fallback flags, and a low-confidence warning. Forecast values are
+estimated Rating, ACS, and KDA; they are not win probabilities.
+
+The data and forecast preparation logic lives in `src/app_data.py`, so it can
+be tested without importing Streamlit. Run the checks with:
+
+```powershell
+python -m pytest -q
+python -m compileall -q app.py src
+```

@@ -8,3 +8,4 @@ joblib
 xgboost
 catboost
 pytest
+streamlit

@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.collection.collection_utils import DEFAULT_RAW_DIR, region_name
+from src.collection.region_config import REGIONS, validate_event_semantics
 
 
 DATASETS = {
@@ -40,6 +41,14 @@ def audit_region(region: str, raw_dir: Path, output_path: Path) -> dict:
         else:
             result["checks"][f"{name}_missing_region_column"] = True
 
+    events_url = frames["events_URL"]
+    if not events_url.empty:
+        try:
+            semantic_report = validate_event_semantics(events_url, region, REGIONS[region])
+            result["checks"]["events_URL_semantic"] = semantic_report
+        except ValueError as error:
+            result["checks"]["events_URL_semantic_error"] = str(error)
+
     matches = frames["matches"]
     players = frames["players_stat"]
     maps = frames["match_maps_stat"]
@@ -65,6 +74,9 @@ def audit_region(region: str, raw_dir: Path, output_path: Path) -> dict:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"Raw audit saved to {output_path}")
+    semantic_error = result["checks"].get("events_URL_semantic_error")
+    if semantic_error:
+        raise ValueError(semantic_error)
     return result
 
 

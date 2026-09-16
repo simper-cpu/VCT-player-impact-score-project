@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.collection.collection_utils import add_region_arguments, add_region_column, region_name, region_path
+from src.collection.region_config import REGIONS, validate_event_semantics
 
 MONTHS = {
     "jan": "01",
@@ -115,7 +116,9 @@ def crawl_events(input_path, region, retries=3):
         event_data = crawl_one_event(url, event_id, retries)
         if event_data:
             events.append(event_data)
-    return add_region_column(pd.DataFrame(events), region)
+    result = add_region_column(pd.DataFrame(events), region)
+    validate_event_semantics(result, region, REGIONS[region])
+    return result
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Crawl VLR event details for one region")
