@@ -6,6 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from src.collection.collection_utils import add_region_arguments, add_region_column, region_name, region_path
+from src.collection.region_config import REGIONS, validate_event_semantics
 
 
 def extract_event_id(event_url):
@@ -67,7 +68,9 @@ def crawl_event_URL(region_id: int, region: str, max_pages: int = 20):
                     "status": status,
                 })
 
-    return add_region_column(pd.DataFrame(events), region)
+    result = add_region_column(pd.DataFrame(events), region)
+    validate_event_semantics(result, region, region_id)
+    return result
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Crawl VLR event URLs for one region")
@@ -75,6 +78,9 @@ if __name__ == "__main__":
     parser.add_argument("--max-pages", type=int, default=20)
     args = parser.parse_args()
     region = region_name(args.region)
+    expected_region_id = REGIONS[region]
+    if args.region_id != expected_region_id:
+        raise ValueError(f"Wrong VLR region id for {region}: expected {expected_region_id}, got {args.region_id}")
     output_path = region_path(args.raw_dir, region, "events_URL")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     crawl_event_URL(args.region_id, region, args.max_pages).to_csv(output_path, index=False)

@@ -18,6 +18,15 @@ stats = Counter()
 
 INVALID_HREF_LOG = Path("data/logs/invalid_player_stats.csv")
 REQUEST_TIMEOUT = 15
+STAT_COLUMNS = ["rating2", "acs", "kills", "deaths", "assists", "kast", "adr", "hsp", "fb", "fd"]
+
+
+def _text_or_none(element):
+    """Return stripped text from a tag, or None when the tag/value is absent."""
+    if element is None:
+        return None
+    value = element.get_text(strip=True)
+    return value or None
 
 def get_player_id(player):
     player_link = player.select_one('a[href^="/player/"]')
@@ -74,26 +83,20 @@ def assign_team_ids_for_players(players, team_ids):
 
 def get_player_stats(player, match_url, map, team_id):
     player_data = {}
-    player_data["name"] = player.find("div", class_ = "ovw-player-name text-of").get_text().strip()
-    player_data["team"] = player.find("div", class_ ="ovw-player-tag ge-text-light").get_text().strip()
+    player_data["name"] = _text_or_none(player.select_one(".ovw-player-name"))
+    player_data["team"] = _text_or_none(player.select_one(".ovw-player-tag"))
     player_data["team_id"] = team_id
     player_data["player_id"] = get_player_id(player)
-    player_data["agent"] = player.find("img").get("alt").strip()
+    agent = player.select_one(".ovw-agents img[alt]") or player.find("img", alt=True)
+    player_data["agent"] = agent.get("alt", "").strip() if agent else None
     player_data["map"] = map
     player_data["match_id"] = get_match_id(match_url)
-    stat_columns = ["rating2", "acs", "kills", "deaths", "assists", "kast", "adr", "hsp", "fb", "fd"]
-    for col in stat_columns:
+    for col in STAT_COLUMNS:
         cell = player.find(attrs={"data-col": col})
         if cell:
-            try:
-                player_data[f"{col}_t"] = cell.find("span", class_="side mod-t").get_text().strip()
-                player_data[f"{col}_ct"] = cell.find("span", class_="side mod-ct").get_text().strip()
-                player_data[f"{col}_all"] = cell.find("span", class_="side mod-both").get_text().strip()
-            except AttributeError:
-                player_data[f"{col}_t"] = None
-                player_data[f"{col}_ct"] = None
-                player_data[f"{col}_all"] = None
-                logger.warning("Cant find player data | match_url = %s", match_url)
+            for side, suffix in (("mod-t", "t"), ("mod-ct", "ct"), ("mod-both", "all")):
+                value = _text_or_none(cell.select_one(f"span.side.{side}"))
+                player_data[f"{col}_{suffix}"] = value
         else:
             player_data[f"{col}_t"] = None
             player_data[f"{col}_ct"] = None
@@ -123,8 +126,9 @@ def get_player(match_url):
         players = map.select("div.ovw-row:not(.mod-head)")
         team_ids = get_match_team_ids(soup)
         assigned_players = assign_team_ids_for_players(players, team_ids)
+        map_data = []
         for player, team_id in assigned_players:
-            match_data.append(
+            map_data.append(
                 get_player_stats(
                     player,
                     match_url,
@@ -132,6 +136,12 @@ def get_player(match_url):
                     team_id,
                 )
             )
+        # Some VLR pages (notably showmatches) contain player rows but no
+        # actual agent or performance values. Do not emit unusable rows.
+        if map_data and any(row.get("rating2_all") is not None for row in map_data):
+            match_data.extend(map_data)
+        elif map_data:
+            logger.warning("No completed player stats | match_url = %s | map = %s", match_url, map_name)
     return match_data
 
 def get_all_matches(input_path, output_path, region):

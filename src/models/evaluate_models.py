@@ -9,7 +9,7 @@ import pandas as pd
 
 from src.features.feature_schema import MODEL_FEATURES, TARGETS, chronological_split
 from src.features.historical_features import build_historical_features
-from src.models.inference import load_model
+from src.models.inference import load_model, predict_bundle
 from src.models.train_models import metrics
 
 
@@ -25,7 +25,7 @@ def evaluate_exported_models(input_path: Path, model_dir: Path, output_path: Pat
     for target in TARGETS:
         frame = test.dropna(subset=[target])
         bundle = load_model(target, model_dir)
-        prediction = bundle["pipeline"].predict(frame[list(MODEL_FEATURES)])
+        prediction = predict_bundle(bundle, frame[list(MODEL_FEATURES)])
         row = metrics(frame[target], prediction)
         row.update({"target": target, "model": bundle["metadata"].get("model_name"), "split": "test"})
         rows.append(row)

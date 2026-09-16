@@ -1,0 +1,152 @@
+{
+  "raw_dir": "D:\\US\\Projects\\VCTProject\\data\\raw",
+  "tables": {
+    "matches": {
+      "rows": 6674,
+      "columns": [
+        "region",
+        "match_id",
+        "match_url",
+        "event_id",
+        "match_date",
+        "match_time"
+      ],
+      "duplicate_rows": 0,
+      "missing": {},
+      "regions": [
+        "AMERICAS",
+        "EMEA",
+        "PACIFIC"
+      ]
+    },
+    "players_stat": {
+      "rows": 138720,
+      "columns": [
+        "name",
+        "team",
+        "team_id",
+        "player_id",
+        "agent",
+        "map",
+        "match_id",
+        "rating2_t",
+        "rating2_ct",
+        "rating2_all",
+        "acs_t",
+        "acs_ct",
+        "acs_all",
+        "kills_t",
+        "kills_ct",
+        "kills_all",
+        "deaths_t",
+        "deaths_ct",
+        "deaths_all",
+        "assists_t",
+        "assists_ct",
+        "assists_all",
+        "kast_t",
+        "kast_ct",
+        "kast_all",
+        "adr_t",
+        "adr_ct",
+        "adr_all",
+        "hsp_t",
+        "hsp_ct",
+        "hsp_all",
+        "fb_t",
+        "fb_ct",
+        "fb_all",
+        "fd_t",
+        "fd_ct",
+        "fd_all",
+        "region"
+      ],
+      "duplicate_rows": 0,
+      "missing": {
+        "team": 115,
+        "rating2_t": 29952,
+        "rating2_ct": 29952,
+        "rating2_all": 29952,
+        "acs_t": 29922,
+        "acs_ct": 1772,
+        "acs_all": 300,
+        "kills_t": 1060,
+        "kills_ct": 1060,
+        "kills_all": 1060,
+        "deaths_t": 1060,
+        "deaths_ct": 1060,
+        "deaths_all": 1060,
+        "assists_t": 1060,
+        "assists_ct": 1060,
+        "assists_all": 1060,
+        "kast_t": 30723,
+        "kast_ct": 30752,
+        "kast_all": 29914,
+        "adr_t": 29922,
+        "adr_ct": 2765,
+        "adr_all": 430,
+        "hsp_t": 2978,
+        "hsp_ct": 2847,
+        "hsp_all": 423,
+        "fb_t": 1070,
+        "fb_ct": 1070,
+        "fb_all": 1070,
+        "fd_t": 1070,
+        "fd_ct": 1070,
+        "fd_all": 1070
+      },
+      "complete_target_rows": 108768,
+      "target_missing_rates": {
+        "rating2_all": 0.21591695501730104,
+        "acs_all": 0.0021626297577854673,
+        "kills_all": 0.0076412918108419835,
+        "deaths_all": 0.0076412918108419835
+      },
+      "regions": [
+        "AMERICAS",
+        "EMEA",
+        "PACIFIC"
+      ]
+    },
+    "match_maps_stat": {
+      "rows": 14272,
+      "columns": [
+        "match_id",
+        "map_id",
+        "map_name",
+        "team_pick",
+        "ct_team",
+        "t_team",
+        "team_1",
+        "team_1_id",
+        "team_2",
+        "team_2_id",
+        "first_half_ct_win_rounds",
+        "first_half_t_win_rounds",
+        "second_half_ct_win_rounds",
+        "second_half_t_win_rounds",
+        "ot_team_ct_win",
+        "ot_team_t_win",
+        "map_winner",
+        "region"
+      ],
+      "duplicate_rows": 0,
+      "missing": {
+        "ct_team": 64,
+        "t_team": 64,
+        "team_1_id": 13,
+        "team_2_id": 12
+      },
+      "regions": [
+        "AMERICAS",
+        "EMEA",
+        "PACIFIC"
+      ]
+    }
+  },
+  "errors": [],
+  "warnings": [
+    "players_stat: rating2_all missing rate 21.59%; rows without completed match stats will be removed during cleaning"
+  ],
+  "status": "passed"
+}

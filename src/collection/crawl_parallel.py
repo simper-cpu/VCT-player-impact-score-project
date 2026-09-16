@@ -1,6 +1,7 @@
 import argparse
 import csv
 import logging
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from time import sleep
@@ -14,6 +15,15 @@ from src.collection.crawl_player_stats import get_player, get_match_id as get_pl
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 LOGGER = logging.getLogger(__name__)
+
+
+def completed_matches_only(matches: pd.DataFrame, cutoff=None) -> pd.DataFrame:
+    """Avoid requesting stats for future/TBD match pages."""
+    if cutoff is None:
+        cutoff = pd.Timestamp.now(tz=timezone.utc).tz_localize(None).normalize()
+    cutoff = pd.Timestamp(cutoff).normalize()
+    dates = pd.to_datetime(matches.get("match_date"), errors="coerce")
+    return matches.loc[dates.notna() & dates.le(cutoff)].copy()
 
 
 def fetch_with_retry(fetcher, url, retries):
@@ -108,6 +118,11 @@ def main():
         action="store_true",
         help="Re-crawl all URLs and replace the selected output file",
     )
+    parser.add_argument(
+        "--include-future",
+        action="store_true",
+        help="Include future/TBD matches; disabled by default for completed-map datasets",
+    )
     args = parser.parse_args()
 
     if args.workers < 1 or args.retries < 1:
@@ -120,6 +135,10 @@ def main():
     map_output = region_path(args.raw_dir, region, "match_maps_stat")
     matches = pd.read_csv(input_path, dtype={"match_id": "string"})
     matches = matches.drop_duplicates("match_id")
+    if not args.include_future:
+        before = len(matches)
+        matches = completed_matches_only(matches)
+        LOGGER.info("Skipped %d future/TBD matches", before - len(matches))
 
     if args.target in {"players", "both"}:
         crawl_dataset(

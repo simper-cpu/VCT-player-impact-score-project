@@ -1,0 +1,119 @@
+﻿{
+    "created_at":  "2026-09-11T08:08:22.1770273+07:00",
+    "source":  "data/raw",
+    "note":  "Pre-region-recovery raw snapshot; preserved without overwrite",
+    "files":  [
+                  {
+                      "path":  ".gitkeep",
+                      "length":  2
+                  },
+                  {
+                      "path":  "all_regions_matches.csv",
+                      "length":  927313
+                  },
+                  {
+                      "path":  "all_regions_match_maps_stat.csv",
+                      "length":  1692131
+                  },
+                  {
+                      "path":  "all_regions_players_stat.csv",
+                      "length":  24124850
+                  },
+                  {
+                      "path":  "all_regions_quality_report.json",
+                      "length":  3434
+                  },
+                  {
+                      "path":  "AMERICAS_events.csv",
+                      "length":  5492
+                  },
+                  {
+                      "path":  "AMERICAS_events_URL.csv",
+                      "length":  7062
+                  },
+                  {
+                      "path":  "AMERICAS_matches.csv",
+                      "length":  576499
+                  },
+                  {
+                      "path":  "AMERICAS_match_maps_stat.csv",
+                      "length":  998545
+                  },
+                  {
+                      "path":  "AMERICAS_players_stat.csv",
+                      "length":  11373779
+                  },
+                  {
+                      "path":  "AMERICAS_raw_audit.json",
+                      "length":  4401
+                  },
+                  {
+                      "path":  "crawl_checkpoint.json",
+                      "length":  559
+                  },
+                  {
+                      "path":  "EMEA_events.csv",
+                      "length":  6669
+                  },
+                  {
+                      "path":  "EMEA_events_URL.csv",
+                      "length":  8489
+                  },
+                  {
+                      "path":  "EMEA_matches.csv",
+                      "length":  628494
+                  },
+                  {
+                      "path":  "EMEA_match_maps_stat.csv",
+                      "length":  1108134
+                  },
+                  {
+                      "path":  "EMEA_players_stat.csv",
+                      "length":  12640617
+                  },
+                  {
+                      "path":  "EMEA_raw_audit.json",
+                      "length":  4406
+                  },
+                  {
+                      "path":  "match_maps_stat.csv",
+                      "length":  1055637
+                  },
+                  {
+                      "path":  "missing_values_report.csv",
+                      "length":  97
+                  },
+                  {
+                      "path":  "PACIFIC_events.csv",
+                      "length":  2877
+                  },
+                  {
+                      "path":  "PACIFIC_events_URL.csv",
+                      "length":  3672
+                  },
+                  {
+                      "path":  "PACIFIC_matches.csv",
+                      "length":  289592
+                  },
+                  {
+                      "path":  "PACIFIC_match_maps_stat.csv",
+                      "length":  511710
+                  },
+                  {
+                      "path":  "PACIFIC_players_stat.csv",
+                      "length":  6195303
+                  },
+                  {
+                      "path":  "PACIFIC_raw_audit.json",
+                      "length":  4358
+                  },
+                  {
+                      "path":  "players_by_events.csv",
+                      "length":  1675146
+                  },
+                  {
+                      "path":  "players_stat.csv",
+                      "length":  15860542
+                  }
+              ]
+}
