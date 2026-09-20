@@ -17,10 +17,10 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestRegressor
+from sklearn.ensemble import RandomForestRegressor, StackingRegressor
 from sklearn.impute import SimpleImputer
 from sklearn.inspection import permutation_importance
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import TransformedTargetRegressor
@@ -47,21 +47,21 @@ DEFAULT_FEATURE_OUTPUT = ROOT / "data/processed/player_match_features.csv"
 DEFAULT_MODEL_DIR = ROOT / "models"
 DEFAULT_REPORT_DIR = ROOT / "reports/modeling"
 DEFAULT_MANIFEST_DIR = ROOT / "reports/manifests"
-DATASET_VERSION = "player_match_dataset_cleaned-v3-role-context"
+DATASET_VERSION = "player_match_dataset_cleaned-v4-context-patch"
 
 FEATURE_GROUPS = {
     "player_only": tuple(column for column in MODEL_FEATURES if column.startswith("player_") or column in {"match_year", "match_month", "match_dayofweek"}),
-    "player_agent_role": tuple(column for column in MODEL_FEATURES if column.startswith("player_") or column in {"agent", "role", "role_confidence", "form_fallback_level", "match_year", "match_month", "match_dayofweek"}),
-    "team": tuple(column for column in MODEL_FEATURES if column in {"team", "team_pick", "team_elo", "team_rating_last_5", "team_rating_last_10", "team_acs_last_5", "team_kda_last_5", "elo_gap"}),
+    "player_agent_role": tuple(column for column in MODEL_FEATURES if column.startswith("player_") or column in {"agent", "role", "role_confidence", "form_fallback_level", "patch", "match_year", "match_month", "match_dayofweek"}),
+    "team": tuple(column for column in MODEL_FEATURES if column in {"team", "team_pick", "team_elo", "team_rating_last_5", "team_rating_last_10", "team_acs_last_5", "team_kda_last_5", "elo_gap", "match_importance"}),
     "opponent": tuple(column for column in MODEL_FEATURES if column in {"opponent_team", "opponent_elo", "opponent_rating_last_5", "opponent_rating_last_10", "opponent_acs_last_5", "opponent_kda_last_5", "opponent_map_strength"}),
-    "map": tuple(column for column in MODEL_FEATURES if column in {"map", "player_map_rating_last", "player_map_rating_last_3", "player_map_acs_last_5", "player_map_kda_last_5", "player_map_matches_played", "team_map_win_rate", "opponent_map_win_rate"}),
+    "map": tuple(column for column in MODEL_FEATURES if column in {"map", "patch", "player_map_rating_last", "player_map_rating_last_3", "player_map_acs_last_5", "player_map_kda_last_5", "player_map_matches_played", "team_map_win_rate", "opponent_map_win_rate"}),
     "roster_interactions": tuple(column for column in MODEL_FEATURES if column in {"lineup_continuity", "veterans_remaining", "team_roster_synergy", "team_role_duelist_share", "team_role_initiator_share", "team_role_controller_share", "team_role_sentinel_share", "player_agent_map_rating_last_5", "player_role_map_rating_last_5", "team_map_rating_last_5"}),
 }
 
 DEFAULT_CANDIDATES = {
-    "rating2_all": ("rf", "xgb", "xgb_tuned", "catboost"),
-    "acs_all": ("rf", "xgb", "xgb_tuned", "catboost"),
-    "kda_all": ("rf", "xgb", "xgb_tuned", "xgb_huber", "xgb_quantile", "catboost"),
+    "rating2_all": ("rf", "xgb", "xgb_tuned", "stacking", "catboost"),
+    "acs_all": ("rf", "xgb", "xgb_tuned", "stacking", "catboost"),
+    "kda_all": ("rf", "xgb", "xgb_tuned", "stacking", "xgb_huber", "xgb_quantile", "catboost"),
 }
 
 
@@ -84,55 +84,45 @@ def make_preprocessor() -> ColumnTransformer:
     )
 
 
-def make_estimator(kind: str, random_state: int = 42):
+def make_estimator(kind: str, random_state: int = 42, params: dict | None = None):
+    params = dict(params or {})
     if kind == "rf":
-        return RandomForestRegressor(
-            n_estimators=30,
-            max_features=0.5,
-            min_samples_leaf=2,
-            max_depth=10,
-            n_jobs=2,
-            random_state=random_state,
-        )
-    if kind == "xgb":
+        defaults = {
+            "n_estimators": 30,
+            "max_features": 0.5,
+            "min_samples_leaf": 2,
+            "max_depth": 10,
+            "n_jobs": 2,
+            "random_state": random_state,
+        }
+        defaults.update(params)
+        return RandomForestRegressor(**defaults)
+    if kind in {"xgb", "xgb_tuned", "xgb_optuna"}:
         try:
             from xgboost import XGBRegressor
         except ImportError as exc:
             raise RuntimeError("XGBoost is not installed") from exc
-        return XGBRegressor(
-            n_estimators=140,
-            max_depth=4,
-            learning_rate=0.05,
-            subsample=0.85,
-            colsample_bytree=0.85,
-            objective="reg:squarederror",
-            n_jobs=2,
-            random_state=random_state,
-        )
-    if kind == "xgb_tuned":
-        try:
-            from xgboost import XGBRegressor
-        except ImportError as exc:
-            raise RuntimeError("XGBoost is not installed") from exc
-        return XGBRegressor(
-            n_estimators=220,
-            max_depth=3,
-            min_child_weight=5,
-            learning_rate=0.03,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            reg_lambda=2.0,
-            objective="reg:squarederror",
-            tree_method="hist",
-            n_jobs=2,
-            random_state=random_state,
-        )
+        defaults = {
+            "n_estimators": 140 if kind == "xgb" else 220,
+            "max_depth": 4 if kind == "xgb" else 3,
+            "min_child_weight": 1 if kind == "xgb" else 5,
+            "learning_rate": 0.05 if kind == "xgb" else 0.03,
+            "subsample": 0.85 if kind == "xgb" else 0.9,
+            "colsample_bytree": 0.85 if kind == "xgb" else 0.9,
+            "reg_lambda": 1.0 if kind == "xgb" else 2.0,
+            "objective": "reg:squarederror",
+            "tree_method": "hist",
+            "n_jobs": 2,
+            "random_state": random_state,
+        }
+        defaults.update(params)
+        return XGBRegressor(**defaults)
     if kind in {"xgb_huber", "xgb_quantile"}:
         try:
             from xgboost import XGBRegressor
         except ImportError as exc:
             raise RuntimeError("XGBoost is not installed") from exc
-        params = {
+        defaults = {
             "n_estimators": 180,
             "max_depth": 3,
             "learning_rate": 0.04,
@@ -143,29 +133,46 @@ def make_estimator(kind: str, random_state: int = 42):
             "random_state": random_state,
         }
         if kind == "xgb_huber":
-            params["objective"] = "reg:pseudohubererror"
+            defaults["objective"] = "reg:pseudohubererror"
         else:
-            params["objective"] = "reg:quantileerror"
-            params["quantile_alpha"] = 0.5
-        return XGBRegressor(**params)
+            defaults["objective"] = "reg:quantileerror"
+            defaults["quantile_alpha"] = 0.5
+        defaults.update({key: value for key, value in params.items() if key not in {"objective", "quantile_alpha"}})
+        return XGBRegressor(**defaults)
     if kind == "catboost":
         try:
             from catboost import CatBoostRegressor
         except ImportError as exc:
             raise RuntimeError("CatBoost is not installed") from exc
-        return CatBoostRegressor(
-            iterations=250,
-            depth=6,
-            learning_rate=0.05,
-            loss_function="RMSE",
-            verbose=False,
-            random_seed=random_state,
+        defaults = {
+            "iterations": 250,
+            "depth": 6,
+            "learning_rate": 0.05,
+            "loss_function": "RMSE",
+            "verbose": False,
+            "random_seed": random_state,
+        }
+        defaults.update(params)
+        return CatBoostRegressor(**defaults)
+    if kind == "stacking":
+        return StackingRegressor(
+            estimators=[
+                ("rf", RandomForestRegressor(
+                    n_estimators=40, max_depth=10, min_samples_leaf=2,
+                    n_jobs=2, random_state=random_state,
+                )),
+                ("ridge", Ridge(alpha=1.0)),
+            ],
+            final_estimator=Ridge(alpha=1.0),
+            cv=3,
+            n_jobs=2,
+            **params,
         )
     raise ValueError(f"Unknown model kind: {kind}")
 
 
-def make_pipeline(kind: str, log_target: bool = False) -> Pipeline:
-    estimator = make_estimator(kind)
+def make_pipeline(kind: str, log_target: bool = False, estimator_params: dict | None = None) -> Pipeline:
+    estimator = make_estimator(kind, params=estimator_params)
     model = estimator
     if log_target:
         model = TransformedTargetRegressor(
@@ -178,6 +185,54 @@ def log_options(target: str, kind: str) -> tuple[bool, ...]:
     if target == "kda_all" and kind not in {"xgb_quantile"}:
         return (False, True)
     return (False,)
+
+
+def tune_xgb_with_optuna(
+    train_frame: pd.DataFrame,
+    validation_frame: pd.DataFrame,
+    target: str,
+    n_trials: int = 0,
+    random_state: int = 42,
+) -> tuple[dict, dict] | None:
+    """Tune a compact XGBoost search space on the validation block.
+
+    Optuna is optional at import time.  The function returns ``None`` when it
+    is unavailable or disabled, so the regular candidate comparison remains
+    usable in lightweight environments.
+    """
+    if n_trials <= 0:
+        return None
+    try:
+        import optuna
+    except ImportError:
+        return None
+
+    def objective(trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 80, 260, step=20),
+            "max_depth": trial.suggest_int("max_depth", 2, 6),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.02, 0.15, log=True),
+            "subsample": trial.suggest_float("subsample", 0.70, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.70, 1.0),
+            "reg_lambda": trial.suggest_float("reg_lambda", 0.1, 10.0, log=True),
+        }
+        pipeline = make_pipeline("xgb_optuna", target == "kda_all", estimator_params=params)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pipeline.fit(train_frame[list(MODEL_FEATURES)], train_frame[target])
+        prediction = pipeline.predict(validation_frame[list(MODEL_FEATURES)])
+        return metrics(validation_frame[target], prediction)["mae"]
+
+    sampler = optuna.samplers.TPESampler(seed=random_state)
+    study = optuna.create_study(direction="minimize", sampler=sampler)
+    study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
+    return dict(study.best_params), {
+        "enabled": True,
+        "n_trials": n_trials,
+        "best_value": float(study.best_value),
+        "best_params": dict(study.best_params),
+    }
 
 
 def metrics(y_true, prediction) -> dict:
@@ -252,9 +307,12 @@ def save_importance(pipeline: Pipeline, x_test: pd.DataFrame, y_test, target: st
     model = pipeline.named_steps["model"]
     estimator = model.regressor_ if isinstance(model, TransformedTargetRegressor) else model
     names = np.asarray(preprocessor.get_feature_names_out())
-    if not hasattr(estimator, "feature_importances_"):
-        return
-    raw = pd.DataFrame({"feature": names, "importance": estimator.feature_importances_})
+    if hasattr(estimator, "feature_importances_"):
+        raw = pd.DataFrame({"feature": names, "importance": estimator.feature_importances_})
+    else:
+        # Stacking/Ridge models have no native tree importance.  Keep the same
+        # report contract and rely on permutation importance for them below.
+        raw = pd.DataFrame({"feature": names, "importance": np.nan})
     raw["group"] = raw["feature"].map(_group_feature)
     raw.sort_values("importance", ascending=False).to_csv(
         output_dir / f"{target}_feature_importance_raw.csv", index=False
@@ -280,7 +338,15 @@ def save_importance(pipeline: Pipeline, x_test: pd.DataFrame, y_test, target: st
         output_dir / f"{target}_permutation_importance.csv", index=False
     )
 
-    top = grouped.head(20).sort_values("importance")
+    if grouped["importance"].notna().any():
+        top = grouped.head(20).sort_values("importance")
+    else:
+        permutation_groups = (
+            perm.groupby("group", as_index=False)["importance_mean"].sum()
+            .rename(columns={"importance_mean": "importance"})
+            .sort_values("importance", ascending=False)
+        )
+        top = permutation_groups.head(20).sort_values("importance")
     plt.figure(figsize=(9, 7))
     plt.barh(top["group"], top["importance"])
     plt.title(f"{target}: grouped Random Forest importance")
@@ -343,13 +409,15 @@ def _installed(name: str) -> bool:
 def evaluate_rolling_candidates(
     featured: pd.DataFrame,
     target: str,
-    candidates: list[tuple[str, str, bool]],
+    candidates: list[tuple],
 ) -> tuple[list[dict], list[dict]]:
     """Score the validation shortlist on several forward-only time windows."""
     windows = rolling_time_splits(featured, n_splits=3)
     detail_rows: list[dict] = []
     selection_rows: list[dict] = []
-    for label, kind, log_target in candidates:
+    for candidate in candidates:
+        label, kind, log_target = candidate[:3]
+        estimator_params = candidate[3] if len(candidate) > 3 else None
         model_scores = []
         baseline_scores = []
         for window_number, window in enumerate(windows, start=1):
@@ -357,7 +425,7 @@ def evaluate_rolling_candidates(
             validation_window = window.validation.dropna(subset=[target]).copy()
             if train_window.empty or validation_window.empty:
                 continue
-            pipeline = make_pipeline(kind, log_target)
+            pipeline = make_pipeline(kind, log_target, estimator_params=estimator_params)
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 pipeline.fit(train_window[list(MODEL_FEATURES)], train_window[target])
@@ -401,6 +469,7 @@ def train_all(
     report_dir: Path = DEFAULT_REPORT_DIR,
     manifest_dir: Path = DEFAULT_MANIFEST_DIR,
     candidate_kinds: tuple[str, ...] | None = None,
+    optuna_trials: int = 0,
 ) -> dict:
     raw = pd.read_csv(input_path, low_memory=False)
     raw = raw.drop_duplicates(["player_id", "match_id", "map"], keep="last").reset_index(drop=True)
@@ -434,6 +503,7 @@ def train_all(
             "test_cutoff": split.test_cutoff,
         },
         "rows": {"train": len(train), "validation": len(validation), "test": len(test)},
+        "training": {"optuna_trials_per_target": int(optuna_trials)},
         "rolling_windows": [
             {
                 "train_match_ids": list(window.train_match_ids),
@@ -452,6 +522,7 @@ def train_all(
     rolling_detail_rows: list[dict] = []
     rolling_selection_rows: list[dict] = []
     calibration_rows: list[dict] = []
+    optuna_rows: list[dict] = []
     for target in TARGETS:
         train_target = train.dropna(subset=[target]).copy()
         validation_target = validation.dropna(subset=[target]).copy()
@@ -460,11 +531,26 @@ def train_all(
         candidate_pipelines = {}
         candidate_validation_predictions = {}
         kinds = candidate_kinds if candidate_kinds is not None else DEFAULT_CANDIDATES[target]
+        tuned_params = None
+        tuning_metadata = {"enabled": False, "n_trials": 0}
+        if optuna_trials > 0 and not train_target.empty and not validation_target.empty:
+            try:
+                tuned = tune_xgb_with_optuna(
+                    train_target, validation_target, target, n_trials=optuna_trials,
+                )
+            except (RuntimeError, ValueError, ImportError):
+                tuned = None
+            if tuned is not None:
+                tuned_params, tuning_metadata = tuned
+                if "xgb_optuna" not in kinds:
+                    kinds = tuple(kinds) + ("xgb_optuna",)
+        optuna_rows.append({"target": target, **tuning_metadata})
         for kind in kinds:
             for log_target in log_options(target, kind):
                 label = f"{kind}_{'log' if log_target else 'raw'}"
                 try:
-                    pipeline = make_pipeline(kind, log_target)
+                    estimator_params = tuned_params if kind == "xgb_optuna" else None
+                    pipeline = make_pipeline(kind, log_target, estimator_params=estimator_params)
                     with warnings.catch_warnings():
                         warnings.simplefilter("ignore")
                         pipeline.fit(train_target[list(MODEL_FEATURES)], train_target[target])
@@ -472,7 +558,7 @@ def train_all(
                     score = metrics(validation_target[target], prediction)
                     score.update({"target": target, "model": label, "split": "validation"})
                     candidate_results.append(score)
-                    candidate_pipelines[label] = (kind, log_target)
+                    candidate_pipelines[label] = (kind, log_target, estimator_params)
                     candidate_validation_predictions[label] = prediction
                 except (RuntimeError, ValueError):
                     continue
@@ -504,13 +590,13 @@ def train_all(
         else:
             selected_summary = None
             best = min(candidate_results, key=lambda item: item["mae"])
-        best_kind, best_log = candidate_pipelines[best["model"]]
+        best_kind, best_log, best_params = candidate_pipelines[best["model"]]
         validation_prediction = candidate_validation_predictions[best["model"]]
         calibration = fit_affine_calibration(validation_target[target], validation_prediction)
 
         # Refit only the selected configuration on train + validation; test stays untouched.
         refit = pd.concat([train_target, validation_target], ignore_index=True)
-        final_pipeline = make_pipeline(best_kind, best_log)
+        final_pipeline = make_pipeline(best_kind, best_log, estimator_params=best_params)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             final_pipeline.fit(refit[list(MODEL_FEATURES)], refit[target])
@@ -599,6 +685,7 @@ def train_all(
             "calibration": calibration,
             "dataset_version": DATASET_VERSION,
             "package_versions": _package_versions(),
+            "optuna": tuning_metadata,
         }
         stem = {"rating2_all": "rating", "acs_all": "acs", "kda_all": "kda"}[target]
         joblib.dump({"pipeline": final_pipeline, "metadata": metadata}, model_dir / f"vct_{stem}_pipeline.joblib")
@@ -616,6 +703,7 @@ def train_all(
     pd.DataFrame(calibration_rows).to_csv(
         report_dir / "calibration_metrics.csv", index=False
     )
+    pd.DataFrame(optuna_rows).to_csv(report_dir / "optuna_trials.csv", index=False)
     metrics_frame = pd.DataFrame(all_metrics)
     metrics_frame.to_csv(report_dir / "metrics.csv", index=False)
     return {"metrics": metrics_frame, "manifest": manifest}
@@ -628,6 +716,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--report-dir", type=Path, default=DEFAULT_REPORT_DIR)
     parser.add_argument("--manifest-dir", type=Path, default=DEFAULT_MANIFEST_DIR)
     parser.add_argument("--rf-only", action="store_true", help="Skip XGBoost comparison")
+    parser.add_argument(
+        "--optuna-trials", type=int, default=0,
+        help="Run this many Optuna trials per target (0 disables optional tuning)",
+    )
     return parser.parse_args()
 
 
@@ -636,5 +728,6 @@ if __name__ == "__main__":
     result = train_all(
         args.input, args.model_dir, args.report_dir, args.manifest_dir,
         candidate_kinds=("rf",) if args.rf_only else None,
+        optuna_trials=args.optuna_trials,
     )
     print(result["metrics"].to_string(index=False))

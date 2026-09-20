@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -32,10 +32,12 @@ _NUMERIC_COLUMNS = (
     "fb_all", "fd_all", "first_half_ct_win_rounds", "first_half_t_win_rounds",
     "second_half_ct_win_rounds", "second_half_t_win_rounds", "ot_team_ct_win",
     "ot_team_t_win",
+    "match_importance",
 )
 _TEXT_COLUMNS = (
     "region", "team", "opponent_team", "agent", "map", "team_pick",
     "map_winner", "event_stage", "event_round", "team_1", "team_2",
+    "patch",
 )
 _TBD_VALUES = {"", "nan", "none", "null", "tbd", "unknown", "__unknown__"}
 
@@ -81,7 +83,30 @@ def load_local_dataset(
     source = Path(preferred_path) if Path(preferred_path).exists() else Path(fallback_path)
     if not source.exists():
         raise FileNotFoundError(f"No local dataset found at {preferred_path} or {fallback_path}")
-    return normalize_dataset(pd.read_csv(source, low_memory=False)), source
+    # The explorer never needs crawler-only columns.  Selecting them here is
+    # particularly helpful for the all-regions player-stat file.
+    columns = {
+        "player_name", "name", "region", "player_id", "team", "team_id",
+        "opponent_team", "opponent_team_id", "agent", "map", "match_id",
+        "event_id", "event_stage", "event_round", "match_date", "match_time",
+        "team_1", "team_2", "team_pick", "map_winner", "patch",
+        "match_importance", *TARGETS, "kills_all", "deaths_all", "assists_all",
+        "adr_all", "kast_all", "fb_all", "fd_all",
+        "first_half_ct_win_rounds", "first_half_t_win_rounds",
+        "second_half_ct_win_rounds", "second_half_t_win_rounds",
+        "ot_team_ct_win", "ot_team_t_win", "role", "role_confidence",
+    }
+    return normalize_dataset(_read_csv_selected(source, columns)), source
+
+
+def _read_csv_selected(path: Path, columns: set[str]) -> pd.DataFrame:
+    """Read only columns used by the app, preferring pyarrow when available."""
+    header = pd.read_csv(path, nrows=0)
+    usecols = [column for column in header.columns if column in columns]
+    try:
+        return pd.read_csv(path, usecols=usecols, engine="pyarrow")
+    except (ImportError, ModuleNotFoundError, ValueError, TypeError):
+        return pd.read_csv(path, usecols=usecols, low_memory=False)
 
 
 def filter_completed_history(
@@ -182,18 +207,39 @@ def _map_keys(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def get_recent_roster(frame: pd.DataFrame, team_id: object, n_maps: int = 5) -> pd.DataFrame:
-    """Get unique players appearing in the selected team's latest maps."""
+    """Get unique players appearing in the selected team's latest maps.
+
+    ``agent`` remains the agent from the player's latest recorded map for
+    backwards compatibility.  ``recent_agents`` is the safer UI field: it
+    summarizes all recorded agents in the window instead of presenting one
+    historical pick as the agent for an upcoming map.
+    """
     team_frame = filter_team(frame, team_id)
     if team_frame.empty:
         return pd.DataFrame(columns=["player_id", "player_name", "role", "last_map_date", "maps_in_window"])
     keys = _map_keys(team_frame).sort_values("_timestamp", ascending=False).head(n_maps)
-    recent = team_frame.merge(keys[["match_id", "map"]], on=["match_id", "map"], how="inner")
+    recent = team_frame.merge(
+        keys[["match_id", "map"]], on=["match_id", "map"], how="inner", validate="many_to_one"
+    )
     recent = recent.assign(_timestamp=make_match_timestamp(recent)).sort_values("_timestamp", ascending=False)
     roster = recent.drop_duplicates("player_id", keep="first").copy()
     counts = recent.groupby("player_id")["match_id"].nunique().rename("maps_in_window")
     roster = roster.join(counts, on="player_id")
+    if "agent" in recent:
+        recent_agents = (
+            recent.dropna(subset=["agent"])
+            .groupby("player_id")["agent"]
+            .apply(lambda values: " / ".join(dict.fromkeys(values.astype(str))))
+            .rename("recent_agents")
+        )
+        roster = roster.join(recent_agents, on="player_id")
     roster["last_map_date"] = roster["_timestamp"].dt.date
-    columns = [column for column in ["player_id", "player_name", "role", "last_map_date", "maps_in_window", "agent"] if column in roster]
+    columns = [
+        column for column in [
+            "player_id", "player_name", "role", "last_map_date", "maps_in_window",
+            "agent", "recent_agents",
+        ] if column in roster
+    ]
     return roster[columns].reset_index(drop=True)
 
 
@@ -250,6 +296,45 @@ def get_player_history(frame: pd.DataFrame, player_id: object, team_id: object |
     return result.assign(_timestamp=make_match_timestamp(result)).sort_values("_timestamp", ascending=False).drop(columns="_timestamp")
 
 
+def get_recent_performance_history(
+    frame: pd.DataFrame,
+    *,
+    player_id: object | None = None,
+    team_id: object | None = None,
+    limit: int = 10,
+) -> pd.DataFrame:
+    """Return one aggregate performance row for each of the latest matches.
+
+    Raw data is map-grain.  The UI wants a match-grain trend, so multi-map
+    matches are averaged before taking the latest ``limit`` matches.
+    """
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    scoped = frame.copy()
+    if player_id is not None:
+        scoped = get_player_history(scoped, player_id, team_id)
+    elif team_id is not None:
+        scoped = filter_team(scoped, team_id)
+    if scoped.empty:
+        return scoped
+    scoped = filter_completed_history(scoped)
+    if scoped.empty:
+        return scoped
+    scoped = scoped.assign(_timestamp=make_match_timestamp(scoped))
+    rows = []
+    for match_id, group in scoped.groupby("match_id", sort=False, dropna=False):
+        row = group.sort_values("_timestamp", ascending=False).iloc[0].copy()
+        row["match_id"] = match_id
+        row["match_date"] = group["_timestamp"].min()
+        for metric in ("rating2_all", "acs_all", "kda_all"):
+            if metric in group:
+                row[metric] = pd.to_numeric(group[metric], errors="coerce").mean()
+        row["map"] = ", ".join(group["map"].dropna().astype(str).unique())
+        rows.append(row)
+    result = pd.DataFrame(rows).sort_values("_timestamp", ascending=False).head(limit)
+    return result.sort_values("_timestamp", kind="stable").drop(columns="_timestamp").reset_index(drop=True)
+
+
 CHART_METRICS = {
     "Rating": "rating2_all", "ACS": "acs_all", "KDA": "kda_all",
     "Kills": "kills_all", "Deaths": "deaths_all", "Assists": "assists_all",
@@ -294,6 +379,7 @@ def build_forecast_request(
     map_name: str | None = None,
     agent_name: str | None = None,
     opponent_team_name: str | None = None,
+    agent_by_player: Mapping[object, str | None] | None = None,
 ) -> pd.DataFrame:
     """Create one sparse future-map request per selected player."""
     if opponent_team_id is None or pd.isna(opponent_team_id):
@@ -321,8 +407,13 @@ def build_forecast_request(
         }
         if map_name:
             request["map"] = map_name
-        if agent_name:
-            request["agent"] = agent_name
+        selected_agent = agent_name
+        if agent_by_player is not None:
+            selected_agent = agent_by_player.get(player_id)
+            if selected_agent is None:
+                selected_agent = agent_by_player.get(str(player_id))
+        if selected_agent:
+            request["agent"] = selected_agent
         else:
             request["role"] = latest.get("role", "Flex/Unknown")
         requests.append(request)

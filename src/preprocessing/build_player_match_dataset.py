@@ -1,4 +1,5 @@
 import argparse
+import importlib.util
 from pathlib import Path
 
 import pandas as pd
@@ -11,6 +12,30 @@ INITIAL_ELO = 1500.0
 ELO_K_FACTOR = 32.0
 PLAYER_MAP_KEY = ["player_id", "match_id", "map"]
 MATCH_MAP_KEY = ["match_id", "map"]
+
+
+def read_csv_selected(path: Path, columns: set[str]) -> pd.DataFrame:
+    """Read a compatible subset of a CSV, using pyarrow when installed."""
+    header = pd.read_csv(path, nrows=0)
+    usecols = [column for column in header.columns if column in columns]
+    if importlib.util.find_spec("pyarrow") is not None:
+        try:
+            return pd.read_csv(path, usecols=usecols, engine="pyarrow")
+        except (ImportError, ModuleNotFoundError, ValueError, TypeError):
+            pass
+    return pd.read_csv(path, usecols=usecols, low_memory=False)
+
+
+def derive_match_importance(frame: pd.DataFrame) -> pd.Series:
+    """Map known tournament stages to a bounded pre-match importance score."""
+    stage = frame.get("event_stage", pd.Series("", index=frame.index)).fillna("").astype(str).str.lower()
+    round_name = frame.get("event_round", pd.Series("", index=frame.index)).fillna("").astype(str).str.lower()
+    text = stage + " " + round_name
+    score = pd.Series(0.5, index=frame.index, dtype="float64")
+    score.loc[text.str.contains("final|championship", regex=True)] = 1.0
+    score.loc[text.str.contains("semi|playoff|upper|lower", regex=True)] = 0.8
+    score.loc[text.str.contains("group|regular|swiss", regex=True)] = 0.4
+    return score
 
 
 def parse_percentage_series(series):
@@ -139,7 +164,9 @@ def add_map_elo_features(dataset):
         ratings[team_2_id] = team_2_elo - team_1_change
 
     map_elo = pd.DataFrame(map_elo_rows)
-    dataset = dataset.merge(map_elo, on=["match_id", "map"], how="left")
+    dataset = dataset.merge(
+        map_elo, on=["match_id", "map"], how="left", validate="many_to_one"
+    )
     dataset["team_elo"] = dataset["team_1_elo"].where(
         dataset["team_id"] == dataset["team_1_id"], dataset["team_2_elo"]
     )
@@ -151,16 +178,34 @@ def add_map_elo_features(dataset):
 
 
 def build_feature_dataset(players_path, matches_path, maps_path, output_path=OUTPUT_PATH):
-    players = clean_player_stats(pd.read_csv(players_path, low_memory=False))
-    matches = pd.read_csv(matches_path, low_memory=False)
-    maps_df = pd.read_csv(maps_path, low_memory=False)
+    player_columns = {
+        "name", "player_name", "team", "team_id", "player_id", "agent", "map", "match_id", "region",
+        "rating2_t", "rating2_ct", "rating2_all", "acs_t", "acs_ct", "acs_all",
+        "kills_t", "kills_ct", "kills_all", "deaths_t", "deaths_ct", "deaths_all",
+        "assists_t", "assists_ct", "assists_all", "kast_t", "kast_ct", "kast_all",
+        "adr_t", "adr_ct", "adr_all", "hsp_t", "hsp_ct", "hsp_all", "fb_t", "fb_ct", "fb_all",
+        "fd_t", "fd_ct", "fd_all",
+    }
+    match_columns_available = {
+        "match_id", "event_id", "match_date", "match_time", "event_stage", "event_round",
+        "stage", "round", "patch", "patch_version", "match_importance",
+    }
+    map_columns = {
+        "match_id", "map_name", "team_pick", "team_1", "team_2", "team_1_id", "team_2_id",
+        "map_winner", "first_half_ct_win_rounds", "first_half_t_win_rounds",
+        "second_half_ct_win_rounds", "second_half_t_win_rounds", "ot_team_ct_win", "ot_team_t_win",
+        "patch", "patch_version",
+    }
+    players = clean_player_stats(read_csv_selected(Path(players_path), player_columns))
+    matches = read_csv_selected(Path(matches_path), match_columns_available)
+    maps_df = read_csv_selected(Path(maps_path), map_columns)
 
     matches["match_id"] = pd.to_numeric(matches["match_id"], errors="coerce")
     maps_df["match_id"] = pd.to_numeric(maps_df["match_id"], errors="coerce")
     maps_df["team_1_id"] = pd.to_numeric(maps_df["team_1_id"], errors="coerce")
     maps_df["team_2_id"] = pd.to_numeric(maps_df["team_2_id"], errors="coerce")
 
-    map_info = maps_df[[
+    map_info = maps_df[[column for column in [
         "match_id",
         "map_name",
         "team_1",
@@ -175,7 +220,9 @@ def build_feature_dataset(players_path, matches_path, maps_path, output_path=OUT
         "second_half_t_win_rounds",
         "ot_team_ct_win",
         "ot_team_t_win",
-    ]].copy()
+        "patch",
+        "patch_version",
+    ] if column in maps_df.columns]].copy()
     map_info = map_info.rename(columns={"map_name": "map"})
     map_info = map_info.drop_duplicates(MATCH_MAP_KEY, keep="last").copy()
 
@@ -186,26 +233,41 @@ def build_feature_dataset(players_path, matches_path, maps_path, output_path=OUT
     match_info = matches[match_columns].copy()
     match_info = match_info.rename(columns={"stage": "event_stage", "round": "event_round"})
     match_info = match_info.loc[:, ~match_info.columns.duplicated()]
+    match_info = match_info.dropna(subset=["match_id"]).drop_duplicates("match_id", keep="last")
+    if "patch_version" in match_info.columns and "patch" not in match_info.columns:
+        match_info = match_info.rename(columns={"patch_version": "patch"})
+    if "match_importance" not in match_info.columns:
+        match_info["match_importance"] = derive_match_importance(match_info)
+    else:
+        supplied_importance = pd.to_numeric(match_info["match_importance"], errors="coerce")
+        match_info["match_importance"] = supplied_importance.fillna(derive_match_importance(match_info))
+
+    player_match_ids = players["match_id"].dropna().unique()
+    match_info = match_info[match_info["match_id"].isin(player_match_ids)]
+    map_info = map_info[map_info["match_id"].isin(player_match_ids)]
+    if "patch" in match_info.columns and "patch" in map_info.columns:
+        map_info = map_info.drop(columns="patch")
+    if "patch_version" in map_info.columns:
+        map_info = map_info.drop(columns="patch_version")
 
     dataset = players.merge(
         match_info,
         on="match_id",
         how="left",
+        validate="many_to_one",
     )
-    dataset = dataset.merge(map_info, on=["match_id", "map"], how="left")
+    dataset = dataset.dropna(subset=["match_id", "team_id", "map"])
+    dataset = dataset.merge(
+        map_info, on=["match_id", "map"], how="left", validate="many_to_one",
+    )
 
     dataset["team_1_id"] = pd.to_numeric(dataset["team_1_id"], errors="coerce")
     dataset["team_2_id"] = pd.to_numeric(dataset["team_2_id"], errors="coerce")
     dataset["team_id"] = pd.to_numeric(dataset["team_id"], errors="coerce")
 
-    dataset["opponent_team_id"] = dataset.apply(
-        lambda row: row["team_2_id"] if row["team_id"] == row["team_1_id"] else row["team_1_id"],
-        axis=1,
-    )
-    dataset["opponent_team"] = dataset.apply(
-        lambda row: row["team_2"] if row["team_id"] == row["team_1_id"] else row["team_1"],
-        axis=1,
-    )
+    team_one = dataset["team_id"].eq(dataset["team_1_id"])
+    dataset["opponent_team_id"] = dataset["team_2_id"].where(team_one, dataset["team_1_id"])
+    dataset["opponent_team"] = dataset["team_2"].where(team_one, dataset["team_1"])
     dataset = add_map_elo_features(dataset)
 
     keep_cols = [
@@ -225,6 +287,8 @@ def build_feature_dataset(players_path, matches_path, maps_path, output_path=OUT
         "event_id",
         "event_stage",
         "event_round",
+        "patch",
+        "match_importance",
         "match_date",
         "match_time",
         "team_1",

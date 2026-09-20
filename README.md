@@ -178,10 +178,12 @@ python -m pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The app provides four tabs: team overview, map-level match history, player
-detail with one- or two-metric charts, and forecast. Forecast requires an
-opponent and supports both a general forecast and a map/agent scenario. It
-uses only completed maps before the prediction timestamp and shows sample size,
+The app provides five tabs: team overview, map-level match history, player
+detail with one- or two-metric charts, lineup reference, and pre-match
+forecast. Lineup reference only displays the recent roster of both teams. The
+pre-match forecast lets you choose the participating players and expected
+agents for both sides, then forecasts each selected map separately. It uses
+only completed maps before the prediction timestamp and shows sample size,
 cold-start/fallback flags, and a low-confidence warning. Forecast values are
 estimated Rating, ACS, and KDA; they are not win probabilities.
 
@@ -192,3 +194,26 @@ be tested without importing Streamlit. Run the checks with:
 python -m pytest -q
 python -m compileall -q app.py src
 ```
+
+### Discord bot
+
+The optional `discord_bot.py` exposes `/team`, `/player`, and
+`/forecast player`. It loads the local CSV and all three exported models once
+when Discord becomes ready. Set `DISCORD_BOT_TOKEN` before starting it; for
+fast Slash Command sync in a test server, also set `DISCORD_GUILD_ID`.
+
+```powershell
+python -m pip install -r requirements.txt
+$env:DISCORD_BOT_TOKEN = "your-token"
+$env:DISCORD_GUILD_ID = "your-test-guild-id"  # optional
+python discord_bot.py
+```
+
+Before connecting to Discord, run an offline smoke test that loads the CSV,
+models, Slash Command tree, and one forecast without needing a token:
+
+```powershell
+python discord_bot.py --check
+```
+
+Never commit the bot token or place it directly in source code.

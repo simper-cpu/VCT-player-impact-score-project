@@ -55,6 +55,12 @@ def _prepare_request(request: pd.DataFrame, history: pd.DataFrame | None) -> pd.
     for column in ("team_elo", "opponent_elo", "elo_gap"):
         if column not in result:
             result[column] = np.nan
+    if "match_importance" not in result:
+        result["match_importance"] = 0.5
+    result["match_importance"] = pd.to_numeric(result["match_importance"], errors="coerce").fillna(0.5)
+    if "patch" not in result:
+        result["patch"] = "__unknown__"
+    result["patch"] = result["patch"].fillna("__unknown__")
     return result
 
 
@@ -79,5 +85,5 @@ def build_inference_state(request: pd.DataFrame, completed_history: pd.DataFrame
     featured = featured.iloc[-len(request_base):].reset_index(drop=True)
     for column in MODEL_FEATURES:
         if column not in featured:
-            featured[column] = "__unknown__" if column in {"map", "agent", "role", "team", "opponent_team", "team_pick", "event_stage", "event_round", "region", "form_fallback_level"} else np.nan
+            featured[column] = "__unknown__" if column in {"map", "agent", "role", "team", "opponent_team", "team_pick", "event_stage", "event_round", "region", "patch", "form_fallback_level"} else (0.5 if column == "match_importance" else np.nan)
     return featured[list(MODEL_FEATURES)]

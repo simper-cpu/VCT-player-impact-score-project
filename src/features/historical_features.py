@@ -311,10 +311,13 @@ def _legacy_build_historical_features(df: pd.DataFrame) -> pd.DataFrame:
         work["form_fallback_level"] = result["form_fallback_level"].to_numpy()
     elif "form_fallback_level" not in work:
         work["form_fallback_level"] = "__unknown__"
-    for column in ("event_stage", "event_round"):
+    if "match_importance" not in work:
+        work["match_importance"] = 0.5
+    work["match_importance"] = pd.to_numeric(work["match_importance"], errors="coerce").fillna(0.5)
+    for column in ("event_stage", "event_round", "patch"):
         if column not in work:
             work[column] = "__unknown__"
-    for column in ("map", "agent", "role", "team", "opponent_team", "team_pick", "event_stage", "event_round", "region", "form_fallback_level"):
+    for column in ("map", "agent", "role", "team", "opponent_team", "team_pick", "event_stage", "event_round", "region", "patch", "form_fallback_level"):
         if column not in work:
             work[column] = "__unknown__"
         work[column] = work[column].fillna("__unknown__")
@@ -498,10 +501,13 @@ def build_historical_features(df: pd.DataFrame) -> pd.DataFrame:
         work["form_fallback_level"] = result["form_fallback_level"].to_numpy()
     elif "form_fallback_level" not in work:
         work["form_fallback_level"] = "__unknown__"
-    for column in ("event_stage", "event_round"):
+    if "match_importance" not in work:
+        work["match_importance"] = 0.5
+    work["match_importance"] = pd.to_numeric(work["match_importance"], errors="coerce").fillna(0.5)
+    for column in ("event_stage", "event_round", "patch"):
         if column not in work:
             work[column] = "__unknown__"
-    for column in ("map", "agent", "role", "team", "opponent_team", "team_pick", "event_stage", "event_round", "region", "form_fallback_level"):
+    for column in ("map", "agent", "role", "team", "opponent_team", "team_pick", "event_stage", "event_round", "region", "patch", "form_fallback_level"):
         if column not in work:
             work[column] = "__unknown__"
         work[column] = work[column].fillna("__unknown__")

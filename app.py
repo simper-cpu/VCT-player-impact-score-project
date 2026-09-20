@@ -21,6 +21,7 @@ from src.app_data import (
     filter_team,
     get_opponent_options,
     get_player_history,
+    get_recent_performance_history,
     get_recent_roster,
     get_team_options,
     load_local_dataset,
@@ -97,7 +98,10 @@ team_history = filter_team(history, selected_team_id, selected_region)
 roster = get_recent_roster(team_history, selected_team_id)
 match_history = aggregate_match_history(team_history)
 
-tabs = st.tabs(["Team Overview", "Match History", "Players / Player Detail", "Forecast"])
+tabs = st.tabs([
+    "Team Overview", "Match History", "Players / Player Detail",
+    "Lineup Reference", "Pre-match Forecast",
+])
 
 with tabs[0]:
     st.subheader(f"{selected_team['display_name']} · {selected_region}")
@@ -112,6 +116,17 @@ with tabs[0]:
         use_container_width=True,
         hide_index=True,
     )
+    st.markdown("#### Recent performance (last 10 matches)")
+    recent_team = get_recent_performance_history(team_history, team_id=selected_team_id, limit=10)
+    if recent_team.empty:
+        st.info("No recent performance metrics are available.")
+    else:
+        team_chart_cols = st.columns(3)
+        for chart_col, metric in zip(team_chart_cols, ("Rating", "ACS", "KDA")):
+            chart_col.caption(metric)
+            metric_data = build_chart_data(recent_team, [metric])
+            if not metric_data.empty:
+                chart_col.line_chart(metric_data.set_index("match_date")["value"])
 
 with tabs[1]:
     st.subheader("Map-level match history")
@@ -178,6 +193,17 @@ with tabs[2]:
                 st.line_chart(chart_frame)
             else:
                 st.info("The selected metrics are not present in the player history.")
+        st.caption("Recent form charts use the latest 10 matches.")
+        recent_player = get_recent_performance_history(
+            team_history, player_id=selected_player_id, team_id=selected_team_id, limit=10,
+        )
+        if not recent_player.empty:
+            recent_cols = st.columns(3)
+            for chart_col, metric in zip(recent_cols, ("Rating", "ACS", "KDA")):
+                chart_col.caption(f"{metric} · last 10")
+                metric_data = build_chart_data(recent_player, [metric])
+                if not metric_data.empty:
+                    chart_col.line_chart(metric_data.set_index("match_date")["value"])
         player_columns = [
             "match_date", "opponent_team", "map", "agent", "role", "rating2_all", "acs_all", "kda_all",
             "kills_all", "deaths_all", "assists_all", "adr_all", "kast_all", "fb_all", "fd_all",
@@ -185,62 +211,245 @@ with tabs[2]:
         st.dataframe(_display_columns(player_history, player_columns), use_container_width=True, hide_index=True)
 
 with tabs[3]:
-    st.subheader("Estimated future-map performance")
-    st.caption("Forecasts estimate Rating, ACS and KDA. They are not probabilities of winning.")
+    st.subheader("Lineup reference")
+    st.caption(
+        "Chọn đối thủ để xem roster gần đây của hai bên. Phần này chỉ dùng để tham khảo "
+        "và không gọi model dự đoán. Agent là lịch sử trong các map gần nhất."
+    )
+    reference_opponents = get_opponent_options(
+        team_history,
+        all_teams=team_options,
+        exclude_team_id=selected_team_id,
+    )
+    if reference_opponents.empty:
+        st.info("No opponent team is available in the local dataset.")
+    else:
+        reference_label = st.selectbox(
+            "Opponent team",
+            reference_opponents["label"].tolist(),
+            key="reference_opponent_team",
+        )
+        reference_row = reference_opponents.loc[
+            reference_opponents["label"].eq(reference_label)
+        ].iloc[0]
+        reference_roster = get_recent_roster(history, reference_row["opponent_team_id"])
+        reference_cols = st.columns(2)
+        for column, title, roster_frame in (
+            (reference_cols[0], f"Your roster · {selected_team['display_name']}", roster),
+            (reference_cols[1], f"Opponent roster · {reference_row['opponent_team']}", reference_roster),
+        ):
+            with column:
+                st.markdown(f"#### {title}")
+                if roster_frame.empty:
+                    st.info("No recent roster is available.")
+                else:
+                    st.dataframe(
+                        _display_columns(
+                            roster_frame,
+                            ["player_name", "role", "recent_agents", "maps_in_window", "last_map_date"],
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+with tabs[4]:
+    st.subheader("Pre-match lineup forecast")
+    st.caption(
+        "Chọn roster và agent dự kiến của cả hai bên. Model hiện tại dự đoán Rating, ACS và KDA "
+        "theo từng player/map; không phải xác suất thắng trận."
+    )
     opponents = get_opponent_options(
         team_history,
-        all_teams=team_options[team_options["region"].eq(selected_region)],
+        all_teams=team_options,
         exclude_team_id=selected_team_id,
     )
     if opponents.empty or roster.empty:
-        st.warning("Forecast requires a team with a recent roster and at least one known opponent.")
+        st.warning("Pre-match forecast requires both teams and a recent roster for your team.")
     else:
-        forecast_col1, forecast_col2 = st.columns(2)
-        opponent_label = forecast_col1.selectbox("Opponent (required)", opponents["label"].tolist())
+        opponent_label = st.selectbox(
+            "Opponent team (required)",
+            opponents["label"].tolist(),
+            key="prematch_opponent_team",
+        )
         opponent_row = opponents.loc[opponents["label"].eq(opponent_label)].iloc[0]
-        player_labels = {
+        opponent_roster = get_recent_roster(history, opponent_row["opponent_team_id"])
+        if opponent_roster.empty:
+            st.warning(
+                "The selected opponent has no recent roster in the local data. "
+                "Use Lineup Reference or select another opponent."
+            )
+            st.stop()
+
+        own_player_labels = {
             f"{row.player_name} (id={int(row.player_id)})": row.player_id
             for row in roster.itertuples()
         }
-        selected_players = forecast_col2.multiselect("Players", list(player_labels), default=list(player_labels)[:1])
+        opponent_player_labels = {
+            f"{row.player_name} (id={int(row.player_id)})": row.player_id
+            for row in opponent_roster.itertuples()
+        }
+        lineup_col1, lineup_col2 = st.columns(2)
+        selected_players = lineup_col1.multiselect(
+            f"Your roster · {selected_team['display_name']}",
+            list(own_player_labels),
+            default=list(own_player_labels)[:5],
+            max_selections=5,
+            key="prematch_own_players",
+        )
+        selected_opponent_players = lineup_col2.multiselect(
+            f"Opponent roster · {opponent_row['opponent_team']}",
+            list(opponent_player_labels),
+            default=list(opponent_player_labels)[:5],
+            max_selections=5,
+            key="prematch_opponent_players",
+        )
 
-        all_maps = sorted(team_history["map"].dropna().astype(str).unique().tolist())
-        all_agents = sorted(team_history["agent"].dropna().astype(str).unique().tolist())
+        all_maps = sorted(history["map"].dropna().astype(str).unique().tolist())
+        all_agents = sorted(history["agent"].dropna().astype(str).unique().tolist())
         scenario_col1, scenario_col2 = st.columns(2)
-        map_choice = scenario_col1.selectbox("Map (optional)", ["General forecast"] + all_maps)
-        agent_choice = scenario_col2.selectbox("Agent (optional)", ["General forecast"] + all_agents)
+        match_format = scenario_col1.selectbox("Match format", ["Bo1", "Bo3"])
+        map_pool = scenario_col2.multiselect(
+            "Map pool / ban-pick",
+            all_maps,
+            default=all_maps[:1] if match_format == "Bo1" else all_maps[:2],
+            max_selections=1 if match_format == "Bo1" else 3,
+        )
+        forecast_maps = map_pool or [None]
+
+        def _agent_selection(
+            title: str,
+            player_labels: dict[str, object],
+            team_id: object,
+            key_prefix: str,
+        ) -> dict[object, str | None]:
+            st.markdown(f"#### {title}")
+            selections: dict[object, str | None] = {}
+            for player_label, player_id in player_labels.items():
+                player_history = get_player_history(history, player_id, team_id)
+                player_agents = sorted(player_history["agent"].dropna().astype(str).unique().tolist())
+                choices = ["General forecast"] + sorted(set(player_agents).union(all_agents))
+                latest_agent = (
+                    str(player_history.iloc[0]["agent"])
+                    if not player_history.empty and pd.notna(player_history.iloc[0].get("agent"))
+                    else "General forecast"
+                )
+                default_index = choices.index(latest_agent) if latest_agent in choices else 0
+                selected_agent = st.selectbox(
+                    player_label,
+                    choices,
+                    index=default_index,
+                    key=f"{key_prefix}_{player_id}",
+                )
+                selections[player_id] = None if selected_agent == "General forecast" else selected_agent
+            return selections
+
+        agent_col1, agent_col2 = st.columns(2)
+        with agent_col1:
+            own_agents = _agent_selection(
+                "Your expected agents",
+                {label: own_player_labels[label] for label in selected_players},
+                selected_team_id,
+                "prematch_own_agent",
+            )
+        with agent_col2:
+            opponent_agents = _agent_selection(
+                "Opponent expected agents",
+                {label: opponent_player_labels[label] for label in selected_opponent_players},
+                opponent_row["opponent_team_id"],
+                "prematch_opponent_agent",
+            )
+
         date_col, time_col = st.columns(2)
         prediction_date = date_col.date_input("Prediction date", value=pd.Timestamp.now().date())
         prediction_time = time_col.time_input("Prediction time", value=time(12, 0))
-        if map_choice == "General forecast" or agent_choice == "General forecast":
-            st.info("General forecast: map and/or agent context is unknown and will use the model fallback path.")
+        if map_pool:
+            st.info(f"Forecast will be generated separately for: {', '.join(map_pool)}.")
         else:
-            st.info("Scenario forecast: the selected map and agent are included as context.")
+            st.info("No map selected: the model fallback path will provide a general forecast.")
 
-        if st.button("Run forecast", type="primary"):
-            if not selected_players:
-                st.error("Select at least one player.")
+        if st.button("Run pre-match forecast", type="primary", key="run_prematch_forecast"):
+            if not selected_players or not selected_opponent_players:
+                st.error("Select at least one player for each lineup.")
             else:
                 prediction_datetime = pd.Timestamp(datetime.combine(prediction_date, prediction_time))
                 history_at_prediction = filter_completed_history(history, cutoff=prediction_datetime)
                 try:
-                    request = build_forecast_request(
-                        history_at_prediction,
-                        selected_team_id,
-                        opponent_row["opponent_team_id"],
-                        [player_labels[label] for label in selected_players],
-                        prediction_datetime,
-                        None if map_choice == "General forecast" else map_choice,
-                        None if agent_choice == "General forecast" else agent_choice,
-                        opponent_team_name=opponent_row["opponent_team"],
-                    )
                     bundles = {
                         target: load_cached_model(target, str(ACTIVE_MODEL_DIR))
                         for target in TARGETS
                     }
-                    predictions = run_forecast(request, history_at_prediction, bundles)
-                    st.dataframe(predictions, use_container_width=True, hide_index=True)
-                    if predictions["low_confidence"].any():
+                    own_predictions_by_map = []
+                    opponent_predictions_by_map = []
+                    for forecast_map in forecast_maps:
+                        own_request = build_forecast_request(
+                            history_at_prediction,
+                            selected_team_id,
+                            opponent_row["opponent_team_id"],
+                            [own_player_labels[label] for label in selected_players],
+                            prediction_datetime,
+                            forecast_map,
+                            opponent_team_name=opponent_row["opponent_team"],
+                            agent_by_player=own_agents,
+                        )
+                        opponent_request = build_forecast_request(
+                            history_at_prediction,
+                            opponent_row["opponent_team_id"],
+                            selected_team_id,
+                            [opponent_player_labels[label] for label in selected_opponent_players],
+                            prediction_datetime,
+                            forecast_map,
+                            opponent_team_name=selected_team["display_name"],
+                            agent_by_player=opponent_agents,
+                        )
+                        own_result = run_forecast(own_request, history_at_prediction, bundles)
+                        opponent_result = run_forecast(opponent_request, history_at_prediction, bundles)
+                        own_result.insert(0, "forecast_map", forecast_map or "General forecast")
+                        opponent_result.insert(0, "forecast_map", forecast_map or "General forecast")
+                        own_predictions_by_map.append(own_result)
+                        opponent_predictions_by_map.append(opponent_result)
+
+                    own_predictions = pd.concat(own_predictions_by_map, ignore_index=True)
+                    opponent_predictions = pd.concat(opponent_predictions_by_map, ignore_index=True)
+                    display_columns = [
+                        "forecast_map", "player_name", "agent", "forecast_rating2_all",
+                        "forecast_acs_all", "forecast_kda_all",
+                    ]
+                    summary = pd.DataFrame([
+                        {
+                            "lineup": selected_team["display_name"],
+                            "avg_rating": own_predictions["forecast_rating2_all"].mean(),
+                            "avg_acs": own_predictions["forecast_acs_all"].mean(),
+                            "avg_kda": own_predictions["forecast_kda_all"].mean(),
+                        },
+                        {
+                            "lineup": opponent_row["opponent_team"],
+                            "avg_rating": opponent_predictions["forecast_rating2_all"].mean(),
+                            "avg_acs": opponent_predictions["forecast_acs_all"].mean(),
+                            "avg_kda": opponent_predictions["forecast_kda_all"].mean(),
+                        },
+                    ])
+                    st.markdown("#### Team-level reference from player forecasts")
+                    st.dataframe(summary, use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"Format: {match_format} · Maps: {', '.join(map_pool) if map_pool else 'General forecast'} · "
+                        "Các average chỉ là trung bình dự đoán player, không phải win probability."
+                    )
+                    prediction_col1, prediction_col2 = st.columns(2)
+                    with prediction_col1:
+                        st.markdown(f"#### {selected_team['display_name']} predictions")
+                        st.dataframe(
+                            _display_columns(own_predictions, display_columns),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    with prediction_col2:
+                        st.markdown(f"#### {opponent_row['opponent_team']} predictions")
+                        st.dataframe(
+                            _display_columns(opponent_predictions, display_columns),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                    if pd.concat([own_predictions, opponent_predictions])["low_confidence"].any():
                         st.warning("At least one row has low confidence because player history is limited or cold-start.")
                 except Exception as exc:
                     st.error(f"Forecast could not be generated: {exc}")

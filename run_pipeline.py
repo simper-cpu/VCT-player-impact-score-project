@@ -16,6 +16,15 @@ ROOT = Path(__file__).resolve().parent
 DATASET_SUFFIXES = ("events_URL", "events", "matches", "players_stat", "match_maps_stat")
 
 
+def read_csv_optimized(path: Path, **kwargs) -> pd.DataFrame:
+    """Prefer pyarrow for crawl artifacts, with a pandas fallback."""
+    kwargs.pop("low_memory", None)
+    try:
+        return pd.read_csv(path, engine="pyarrow", **kwargs)
+    except (ImportError, ModuleNotFoundError, ValueError, TypeError):
+        return pd.read_csv(path, low_memory=False, **kwargs)
+
+
 def config_signature() -> str:
     payload = json.dumps({"version": REGION_CONFIG_VERSION, "regions": REGIONS}, sort_keys=True)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
@@ -60,7 +69,7 @@ def shared_event_ids(raw_dir: Path, regions: list[str]) -> set[str]:
         path = output_path(raw_dir, region, "events_URL")
         if not path.exists():
             continue
-        frame = pd.read_csv(path, usecols=lambda column: column in {"event_id", "title"}, low_memory=False)
+        frame = read_csv_optimized(path, usecols=lambda column: column in {"event_id", "title"})
         if "event_id" not in frame:
             continue
         frame = frame.dropna(subset=["event_id"]).copy()
@@ -99,7 +108,7 @@ def merge_dataset(raw_dir: Path, suffix: str, regions: list[str], key: list[str]
         path = output_path(raw_dir, region, suffix)
         if not path.exists():
             raise FileNotFoundError(path)
-        frame = pd.read_csv(path, low_memory=False)
+        frame = read_csv_optimized(path)
         if "region" not in frame:
             frame.insert(0, "region", region)
         frames.append(frame)
@@ -131,7 +140,7 @@ def audit_cross_region(raw_dir: Path, regions: list[str], output_path: Path) -> 
             path = raw_dir / f"{region}_{suffix}.csv"
             if not path.exists():
                 continue
-            frame = pd.read_csv(path, low_memory=False)
+            frame = read_csv_optimized(path)
             frame["_source_region"] = region
             frames.append(frame)
         if not frames:
@@ -179,7 +188,7 @@ def audit_cross_region(raw_dir: Path, regions: list[str], output_path: Path) -> 
     for region in regions:
         path = raw_dir / f"{region}_players_stat.csv"
         if path.exists():
-            frame = pd.read_csv(path, usecols=lambda column: column in {"team_id", "region"}, low_memory=False)
+            frame = read_csv_optimized(path, usecols=lambda column: column in {"team_id", "region"})
             frame["_source_region"] = region
             team_frames.append(frame)
     if team_frames:
@@ -209,7 +218,7 @@ def prune_future_raw_matches(raw_dir: Path, regions: list[str], cutoff=None) -> 
         matches_path = raw_dir / f"{region}_matches.csv"
         if not matches_path.exists():
             continue
-        matches = pd.read_csv(matches_path, low_memory=False)
+        matches = read_csv_optimized(matches_path)
         dates = pd.to_datetime(matches.get("match_date"), errors="coerce")
         keep = dates.notna() & dates.le(cutoff)
         valid_ids = set(matches.loc[keep, "match_id"].dropna().astype(str))
@@ -219,7 +228,7 @@ def prune_future_raw_matches(raw_dir: Path, regions: list[str], cutoff=None) -> 
             path = raw_dir / f"{region}_{suffix}.csv"
             if not path.exists():
                 continue
-            frame = pd.read_csv(path, low_memory=False)
+            frame = read_csv_optimized(path)
             if "match_id" in frame:
                 frame = frame[frame["match_id"].astype(str).isin(valid_ids)]
                 frame.to_csv(path, index=False)

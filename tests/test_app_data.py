@@ -76,6 +76,15 @@ def test_team_filter_roster_and_match_aggregation_are_map_level():
     assert matches.loc[matches["match_id"].eq(1), "round_score"].iloc[0].startswith("CT/T")
 
 
+def test_recent_roster_keeps_agent_history_instead_of_implying_future_pick():
+    frame = _app_rows()
+    frame.loc[frame["player_id"].eq(1) & frame["match_id"].eq(2), "agent"] = "raze"
+    roster = get_recent_roster(frame, 10, n_maps=2)
+    player = roster.loc[roster["player_id"].eq(1)].iloc[0]
+    assert player["agent"] == "raze"
+    assert player["recent_agents"] == "raze / jett"
+
+
 def test_team_labels_are_unique_and_opponent_catalog_is_not_head_to_head_limited():
     frame = _app_rows()
     teams = get_team_options(frame)

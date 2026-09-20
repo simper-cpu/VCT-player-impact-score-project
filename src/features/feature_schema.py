@@ -34,7 +34,7 @@ POST_MAP_COLUMNS = (
 
 CATEGORICAL_FEATURES = (
     "map", "agent", "role", "team", "opponent_team", "team_pick",
-    "event_stage", "event_round", "region", "form_fallback_level",
+    "event_stage", "event_round", "region", "patch", "form_fallback_level",
 )
 HISTORICAL_FEATURES = (
     "player_rating_last", "player_rating_last_3", "player_rating_last_5",
@@ -71,7 +71,8 @@ HISTORICAL_FEATURES = (
     "player_history_sample_size",
 )
 TEMPORAL_FEATURES = ("match_year", "match_month", "match_dayofweek")
-MODEL_NUMERIC_FEATURES = HISTORICAL_FEATURES + TEMPORAL_FEATURES
+CONTEXT_NUMERIC_FEATURES = ("match_importance",)
+MODEL_NUMERIC_FEATURES = HISTORICAL_FEATURES + TEMPORAL_FEATURES + CONTEXT_NUMERIC_FEATURES
 MODEL_FEATURES = MODEL_NUMERIC_FEATURES + CATEGORICAL_FEATURES
 FEATURE_SCHEMA_VERSION = "v3-role-context-state"
 
