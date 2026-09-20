@@ -1,0 +1,14 @@
+pandas
+numpy
+scikit-learn
+scipy
+matplotlib
+seaborn
+joblib
+xgboost
+catboost
+pytest
+streamlit
+optuna
+pyarrow
+discord.py>=2.3,<3

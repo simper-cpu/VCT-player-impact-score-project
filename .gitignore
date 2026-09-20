@@ -1,11 +1,14 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.pytest-run-*/
 .venv/
 venv/
 
 # Generated datasets and trained model files
 data/raw/*
 !data/raw/.gitkeep
+data/archive/*
 data/processed/*
 !data/processed/.gitkeep
 models/*
