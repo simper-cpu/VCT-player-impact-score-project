@@ -1,7 +1,6 @@
 """Schema, leakage rules, and chronological split helpers for the VCT pipeline."""
 
-from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, NamedTuple
 
 import pandas as pd
 import numpy as np
@@ -114,8 +113,7 @@ def ensure_no_leakage(features: Iterable[str], target: str) -> None:
         raise ValueError(f"Forbidden/leaky model features: {leaked}")
 
 
-@dataclass(frozen=True)
-class TimeSplit:
+class TimeSplit(NamedTuple):
     train: pd.DataFrame
     validation: pd.DataFrame
     test: pd.DataFrame
@@ -127,8 +125,7 @@ class TimeSplit:
     test_cutoff: str | None
 
 
-@dataclass(frozen=True)
-class RollingTimeWindow:
+class RollingTimeWindow(NamedTuple):
     train: pd.DataFrame
     validation: pd.DataFrame
     train_match_ids: tuple
