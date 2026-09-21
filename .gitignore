@@ -14,5 +14,5 @@ data/processed/*
 models/*
 !models/.gitkeep
 
-!data/processed/player_match_dataset_cleaned*.csv
-!models/*.joblib
+!data/processed/player_match_dataset_cleaned_all_regions.csv
+!models/vct_*.joblib

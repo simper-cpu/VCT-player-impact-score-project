@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, time
+import difflib
 import json
 from pathlib import Path
 
@@ -58,12 +59,89 @@ def load_cached_model(target: str, model_dir: str) -> dict:
     return load_model(target, Path(model_dir))
 
 
+DISPLAY_LABELS = {
+    "player_name": "Player", "player_id": "Player ID", "team": "Team", "team_id": "Team ID",
+    "region": "Region", "opponent_team": "Opponent", "opponent_team_id": "Opponent ID",
+    "match_date": "Date", "match_time": "Time", "map": "Map", "map_winner": "Map Winner",
+    "team_pick": "Side Pick", "round_score": "Round Score", "event_stage": "Stage",
+    "event_round": "Event Round", "event_id": "Event ID", "match_id": "Match ID",
+    "agent": "Agent", "role": "Role", "recent_agents": "Recent Agents",
+    "last_map_date": "Last Map", "maps_in_window": "Maps in Window",
+    "rating2_all": "Rating", "acs_all": "ACS", "kda_all": "KDA", "kills_all": "Kills",
+    "deaths_all": "Deaths", "assists_all": "Assists", "adr_all": "ADR", "kast_all": "KAST",
+    "fb_all": "First Kills", "fd_all": "First Deaths", "forecast_map": "Map",
+    "forecast_rating2_all": "Forecast Rating", "forecast_acs_all": "Forecast ACS",
+    "forecast_kda_all": "Forecast KDA", "avg_rating": "Average Rating",
+    "avg_acs": "Average ACS", "avg_kda": "Average KDA", "lineup": "Lineup",
+}
+
+
 def _display_columns(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
-    return frame[[column for column in columns if column in frame.columns]].copy()
+    result = frame[[column for column in columns if column in frame.columns]].copy()
+    return result.rename(columns={column: DISPLAY_LABELS.get(column, column) for column in result.columns})
 
 
-st.title("🎯 VCT Performance Explorer")
-st.caption("Local-data explorer for team history, player form and estimated future-map performance.")
+def _normalise_text(value: object) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _id_key(value: object) -> str:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return str(int(numeric)) if pd.notna(numeric) else str(value)
+
+
+def _team_display_label(row: pd.Series) -> str:
+    full_name = str(row.get("display_name", row.get("opponent_team", "Unknown team"))).strip()
+    short_name = str(row.get("team", "")).strip()
+    team_id = row.get("team_id", row.get("opponent_team_id"))
+    suffix = f" · ID {int(team_id)}" if pd.notna(team_id) else ""
+    if short_name and _normalise_text(short_name) != _normalise_text(full_name):
+        return f"{full_name} [{short_name}]{suffix}"
+    return f"{full_name}{suffix}"
+
+
+def _player_directory(history: pd.DataFrame, teams: pd.DataFrame) -> pd.DataFrame:
+    """Build a latest-player catalog for global search and direct player URLs."""
+    work = history.copy()
+    work["_timestamp"] = pd.to_datetime(
+        work["match_date"].astype("string") + " " + work["match_time"].fillna("").astype("string"),
+        format="mixed",
+        errors="coerce",
+    )
+    latest = (
+        work.sort_values("_timestamp", ascending=False, kind="stable")
+        .drop_duplicates("player_id", keep="first")
+    )
+    team_catalog = teams.drop_duplicates("team_id").set_index("team_id")
+    latest = latest[["player_id", "player_name", "team_id", "team", "region"]].copy()
+
+    def team_label(row: pd.Series) -> str:
+        if row["team_id"] in team_catalog.index:
+            return _team_display_label(team_catalog.loc[row["team_id"]])
+        return _team_display_label(pd.Series({"display_name": row["team"], "team": row["team"], "team_id": row["team_id"]}))
+
+    latest["team_label"] = latest.apply(team_label, axis=1)
+    latest["label"] = latest.apply(lambda row: f"{row['player_name']} · {row['team_label']}", axis=1)
+    latest["search_text"] = latest.apply(
+        lambda row: _normalise_text(f"{row['player_name']} {row['team_label']} {row['team']}"),
+        axis=1,
+    )
+    return latest.reset_index(drop=True)
+
+
+def _search_players(directory: pd.DataFrame, query: str) -> pd.DataFrame:
+    query = _normalise_text(query)
+    if not query:
+        return directory.iloc[0:0].copy()
+    matches = directory[directory["search_text"].str.contains(query, regex=False, na=False)].copy()
+    if not matches.empty:
+        return matches
+    names = directory["player_name"].dropna().astype(str).unique().tolist()
+    fuzzy_names = difflib.get_close_matches(query, names, n=10, cutoff=0.55)
+    return directory[directory["player_name"].isin(fuzzy_names)].copy()
+
+
+st.title("VCT Performance Explorer")
 
 if "reload_token" not in st.session_state:
     st.session_state.reload_token = 0
@@ -86,17 +164,63 @@ team_options = get_team_options(history)
 if team_options.empty:
     st.error("No completed teams are available in the local dataset.")
     st.stop()
+player_directory = _player_directory(history, team_options)
+team_display_lookup = {
+    _id_key(row["team_id"]): _team_display_label(row)
+    for _, row in team_options.drop_duplicates("team_id").iterrows()
+}
+
+
+def _opponent_ui_label(row: pd.Series) -> str:
+    return team_display_lookup.get(
+        _id_key(row["opponent_team_id"]),
+        f"{row.get('opponent_team', 'Unknown team')} · ID {int(row['opponent_team_id'])}",
+    )
 
 st.sidebar.caption(f"Data source: `{Path(source_path).name}`")
 regions = team_options["region"].dropna().astype(str).unique().tolist()
 selected_region = st.sidebar.selectbox("Region", regions)
 region_teams = team_options[team_options["region"].eq(selected_region)].reset_index(drop=True)
-team_label = st.sidebar.selectbox("Team", region_teams["label"].tolist())
-selected_team = region_teams.loc[region_teams["label"].eq(team_label)].iloc[0]
+team_query = st.sidebar.text_input("Search team", placeholder="Full name or short tag")
+if team_query.strip():
+    query = _normalise_text(team_query)
+    searchable = region_teams[["display_name", "team", "label"]].fillna("").astype(str).agg(" ".join, axis=1)
+    matching_teams = region_teams[searchable.map(_normalise_text).str.contains(query, regex=False)]
+    if not matching_teams.empty:
+        region_teams = matching_teams.reset_index(drop=True)
+    else:
+        st.sidebar.warning("No matching team found.")
+team_labels = [_team_display_label(row) for _, row in region_teams.iterrows()]
+team_label = st.sidebar.selectbox("Team", team_labels)
+selected_team = region_teams.iloc[team_labels.index(team_label)]
 selected_team_id = selected_team["team_id"]
 team_history = filter_team(history, selected_team_id, selected_region)
 roster = get_recent_roster(team_history, selected_team_id)
 match_history = aggregate_match_history(team_history)
+
+player_query_from_url = ""
+try:
+    player_query_from_url = st.query_params.get("player", "")
+except AttributeError:  # pragma: no cover - compatibility with older Streamlit
+    pass
+player_query = st.sidebar.text_input(
+    "Search player",
+    value=player_query_from_url,
+    placeholder="Player name, full name, or short tag",
+    help="You can also open a direct URL such as ?player=Asuna.",
+)
+player_matches = _search_players(player_directory, player_query)
+selected_search_player_id = None
+if player_query.strip():
+    if player_matches.empty:
+        st.sidebar.warning("No matching player found.")
+    else:
+        search_label = st.sidebar.selectbox(
+            "Matching players",
+            player_matches["label"].tolist(),
+            key="player_search_result",
+        )
+        selected_search_player_id = player_matches.loc[player_matches["label"].eq(search_label), "player_id"].iloc[0]
 
 tabs = st.tabs([
     "Team Overview", "Match History", "Players / Player Detail",
@@ -113,7 +237,7 @@ with tabs[0]:
     st.markdown("#### Recent roster")
     st.dataframe(
         _display_columns(roster, ["player_name", "player_id", "role", "agent", "last_map_date", "maps_in_window"]),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
     st.markdown("#### Recent performance (last 10 matches)")
@@ -140,7 +264,15 @@ with tabs[1]:
             min_value=dates.min().date(),
             max_value=dates.max().date(),
         )
-        opponent_values = ["All"] + sorted(match_history["opponent_team"].dropna().astype(str).unique().tolist())
+        opponent_filter_rows = (
+            match_history[["opponent_team_id", "opponent_team"]]
+            .dropna(subset=["opponent_team_id"])
+            .drop_duplicates("opponent_team_id")
+            .copy()
+        )
+        opponent_filter_rows["ui_label"] = opponent_filter_rows.apply(_opponent_ui_label, axis=1)
+        opponent_lookup = dict(zip(opponent_filter_rows["ui_label"], opponent_filter_rows["opponent_team"]))
+        opponent_values = ["All"] + sorted(opponent_lookup)
         map_values = ["All"] + sorted(match_history["map"].dropna().astype(str).unique().tolist())
         filter_col1, filter_col2 = st.columns(2)
         selected_opponent = filter_col1.selectbox("Opponent", opponent_values, key="history_opponent")
@@ -151,56 +283,70 @@ with tabs[1]:
                 filtered_matches["match_date"].dt.date.between(date_range[0], date_range[1])
             ]
         if selected_opponent != "All":
-            filtered_matches = filtered_matches[filtered_matches["opponent_team"].eq(selected_opponent)]
+            filtered_matches = filtered_matches[filtered_matches["opponent_team"].eq(opponent_lookup[selected_opponent])]
         if selected_map != "All":
             filtered_matches = filtered_matches[filtered_matches["map"].eq(selected_map)]
         history_columns = [
             "match_date", "opponent_team", "map", "map_winner", "team_pick", "round_score",
             "event_stage", "event_round", "event_id", "match_id",
         ]
-        st.dataframe(_display_columns(filtered_matches, history_columns), use_container_width=True, hide_index=True)
+        st.dataframe(_display_columns(filtered_matches, history_columns), width="stretch", hide_index=True)
 
 with tabs[2]:
-    st.subheader("Player map history")
-    if roster.empty:
-        st.info("No recent roster is available.")
+    st.subheader("Player detail")
+    search_directory = (
+        player_matches
+        if selected_search_player_id is not None
+        else player_directory[player_directory["team_id"].eq(selected_team_id)].copy()
+    )
+    if search_directory.empty:
+        st.info("No matching player is available.")
     else:
-        player_labels = {
-            f"{row.player_name} (id={int(row.player_id)})": row.player_id
-            for row in roster.itertuples()
-        }
-        selected_player_label = st.selectbox("Player", list(player_labels))
+        player_labels = dict(zip(search_directory["label"], search_directory["player_id"]))
+        default_index = 0
+        if selected_search_player_id is not None:
+            default_index = search_directory["player_id"].tolist().index(selected_search_player_id)
+        selected_player_label = st.selectbox(
+            "Player",
+            list(player_labels),
+            index=default_index,
+            key="player_detail_select",
+        )
         selected_player_id = player_labels[selected_player_label]
-        player_history = get_player_history(team_history, selected_player_id, selected_team_id)
-        metric_columns = ["rating2_all", "acs_all", "kda_all", "kills_all", "deaths_all", "assists_all", "adr_all", "kast_all"]
+        player_record = player_directory.loc[player_directory["player_id"].eq(selected_player_id)].iloc[0]
+        player_team_id = player_record["team_id"]
+        player_history = get_player_history(history, selected_player_id, player_team_id)
+        metric_columns = [
+            column for column in [
+                "rating2_all", "acs_all", "kda_all", "kills_all", "deaths_all", "assists_all",
+                "adr_all", "kast_all",
+            ] if column in player_history.columns
+        ]
         sample_col, missing_col = st.columns(2)
-        sample_col.metric("Completed map sample", len(player_history))
-        missing_values = int(player_history[metric_columns].isna().sum().sum()) if not player_history.empty else 0
+        sample_col.metric("Completed maps", len(player_history))
+        missing_values = int(player_history[metric_columns].isna().sum().sum()) if metric_columns else 0
         missing_col.metric("Missing metric cells", missing_values)
 
         chart_selection = st.multiselect(
-            "Chart metrics (choose 1 or 2)", list(CHART_METRICS), default=["Rating", "ACS"],
+            "Chart metrics", list(CHART_METRICS), default=["Rating", "ACS"], max_selections=2,
         )
-        if len(chart_selection) > 2:
-            st.error("Please select at most two metrics.")
-        elif chart_selection:
+        if chart_selection:
             chart_data = build_chart_data(player_history.sort_values("match_date"), chart_selection)
             if not chart_data.empty:
                 chart_data["x"] = chart_data.apply(
-                    lambda row: f"{row['match_date'].date()} · {row.get('map', '')}", axis=1,
+                    lambda row: f"{row['match_date'].date()} - {row.get('map', '')}", axis=1,
                 )
                 chart_frame = chart_data.pivot_table(index="x", columns="metric", values="value", aggfunc="mean")
                 st.line_chart(chart_frame)
             else:
                 st.info("The selected metrics are not present in the player history.")
-        st.caption("Recent form charts use the latest 10 matches.")
         recent_player = get_recent_performance_history(
-            team_history, player_id=selected_player_id, team_id=selected_team_id, limit=10,
+            history, player_id=selected_player_id, team_id=player_team_id, limit=10,
         )
         if not recent_player.empty:
             recent_cols = st.columns(3)
             for chart_col, metric in zip(recent_cols, ("Rating", "ACS", "KDA")):
-                chart_col.caption(f"{metric} · last 10")
+                chart_col.caption(f"{metric} - last 10 matches")
                 metric_data = build_chart_data(recent_player, [metric])
                 if not metric_data.empty:
                     chart_col.line_chart(metric_data.set_index("match_date")["value"])
@@ -208,14 +354,10 @@ with tabs[2]:
             "match_date", "opponent_team", "map", "agent", "role", "rating2_all", "acs_all", "kda_all",
             "kills_all", "deaths_all", "assists_all", "adr_all", "kast_all", "fb_all", "fd_all",
         ]
-        st.dataframe(_display_columns(player_history, player_columns), use_container_width=True, hide_index=True)
+        st.dataframe(_display_columns(player_history, player_columns), width="stretch", hide_index=True)
 
 with tabs[3]:
     st.subheader("Lineup reference")
-    st.caption(
-        "Chọn đối thủ để xem roster gần đây của hai bên. Phần này chỉ dùng để tham khảo "
-        "và không gọi model dự đoán. Agent là lịch sử trong các map gần nhất."
-    )
     reference_opponents = get_opponent_options(
         team_history,
         all_teams=team_options,
@@ -224,19 +366,21 @@ with tabs[3]:
     if reference_opponents.empty:
         st.info("No opponent team is available in the local dataset.")
     else:
+        reference_opponents = reference_opponents.copy()
+        reference_opponents["ui_label"] = reference_opponents.apply(_opponent_ui_label, axis=1)
         reference_label = st.selectbox(
             "Opponent team",
-            reference_opponents["label"].tolist(),
+            reference_opponents["ui_label"].tolist(),
             key="reference_opponent_team",
         )
         reference_row = reference_opponents.loc[
-            reference_opponents["label"].eq(reference_label)
+            reference_opponents["ui_label"].eq(reference_label)
         ].iloc[0]
         reference_roster = get_recent_roster(history, reference_row["opponent_team_id"])
         reference_cols = st.columns(2)
         for column, title, roster_frame in (
             (reference_cols[0], f"Your roster · {selected_team['display_name']}", roster),
-            (reference_cols[1], f"Opponent roster · {reference_row['opponent_team']}", reference_roster),
+            (reference_cols[1], f"Opponent roster - {_opponent_ui_label(reference_row)}", reference_roster),
         ):
             with column:
                 st.markdown(f"#### {title}")
@@ -248,16 +392,12 @@ with tabs[3]:
                             roster_frame,
                             ["player_name", "role", "recent_agents", "maps_in_window", "last_map_date"],
                         ),
-                        use_container_width=True,
+                        width="stretch",
                         hide_index=True,
                     )
 
 with tabs[4]:
     st.subheader("Pre-match lineup forecast")
-    st.caption(
-        "Chọn roster và agent dự kiến của cả hai bên. Model hiện tại dự đoán Rating, ACS và KDA "
-        "theo từng player/map; không phải xác suất thắng trận."
-    )
     opponents = get_opponent_options(
         team_history,
         all_teams=team_options,
@@ -266,12 +406,14 @@ with tabs[4]:
     if opponents.empty or roster.empty:
         st.warning("Pre-match forecast requires both teams and a recent roster for your team.")
     else:
+        opponents = opponents.copy()
+        opponents["ui_label"] = opponents.apply(_opponent_ui_label, axis=1)
         opponent_label = st.selectbox(
             "Opponent team (required)",
-            opponents["label"].tolist(),
+            opponents["ui_label"].tolist(),
             key="prematch_opponent_team",
         )
-        opponent_row = opponents.loc[opponents["label"].eq(opponent_label)].iloc[0]
+        opponent_row = opponents.loc[opponents["ui_label"].eq(opponent_label)].iloc[0]
         opponent_roster = get_recent_roster(history, opponent_row["opponent_team_id"])
         if opponent_roster.empty:
             st.warning(
@@ -290,14 +432,14 @@ with tabs[4]:
         }
         lineup_col1, lineup_col2 = st.columns(2)
         selected_players = lineup_col1.multiselect(
-            f"Your roster · {selected_team['display_name']}",
+            f"Your roster - {selected_team['display_name']}",
             list(own_player_labels),
             default=list(own_player_labels)[:5],
             max_selections=5,
             key="prematch_own_players",
         )
         selected_opponent_players = lineup_col2.multiselect(
-            f"Opponent roster · {opponent_row['opponent_team']}",
+            f"Opponent roster - {_opponent_ui_label(opponent_row)}",
             list(opponent_player_labels),
             default=list(opponent_player_labels)[:5],
             max_selections=5,
@@ -429,24 +571,24 @@ with tabs[4]:
                         },
                     ])
                     st.markdown("#### Team-level reference from player forecasts")
-                    st.dataframe(summary, use_container_width=True, hide_index=True)
+                    st.dataframe(summary, width="stretch", hide_index=True)
                     st.caption(
-                        f"Format: {match_format} · Maps: {', '.join(map_pool) if map_pool else 'General forecast'} · "
-                        "Các average chỉ là trung bình dự đoán player, không phải win probability."
+                        f"Format: {match_format} - Maps: {', '.join(map_pool) if map_pool else 'General forecast'} - "
+                        "Averages summarize player forecasts; they are not win probabilities."
                     )
                     prediction_col1, prediction_col2 = st.columns(2)
                     with prediction_col1:
                         st.markdown(f"#### {selected_team['display_name']} predictions")
                         st.dataframe(
                             _display_columns(own_predictions, display_columns),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                         )
                     with prediction_col2:
-                        st.markdown(f"#### {opponent_row['opponent_team']} predictions")
+                        st.markdown(f"#### {_opponent_ui_label(opponent_row)} predictions")
                         st.dataframe(
                             _display_columns(opponent_predictions, display_columns),
-                            use_container_width=True,
+                            width="stretch",
                             hide_index=True,
                         )
                     if pd.concat([own_predictions, opponent_predictions])["low_confidence"].any():
