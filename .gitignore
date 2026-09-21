@@ -13,3 +13,6 @@ data/processed/*
 !data/processed/.gitkeep
 models/*
 !models/.gitkeep
+
+!data/processed/player_match_dataset_cleaned*.csv
+!models/*.joblib
