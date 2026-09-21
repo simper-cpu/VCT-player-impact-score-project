@@ -1,7 +1,5 @@
 """Schema, leakage rules, and chronological split helpers for the VCT pipeline."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import Iterable
 
